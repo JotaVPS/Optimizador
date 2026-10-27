@@ -1,9 +1,8 @@
 {
-    "version":  "3.14",
-    "sha256":  "4D736E4770B404BB9BCC9DEBFBCBDFB806A211D2D37D565C00D7FAB30114AB2D",
+    "version":  "3.15",
+    "sha256":  "7BCAC3D549DB654E3A85411693FCBC22DDDB3AE8CFE3049D8E330941DEF900B5",
     "notas":  [
-                  "Discord: el Modo juego le libera la RAM sin cerrarlo ni cortar la llamada (en el modo autom\u00e1tico, cada 5 minutos)",
-                  "Nuevo: modo juego autom\u00e1tico al abrir FiveM, GTA V o el juego que elijas",
-                  "Diagn\u00f3stico: consejo para que Discord no te saque FPS"
+                  "Discord: solo se le libera RAM al entrar al juego y si la memoria est\u00e1 justa (as\u00ed nunca molesta en llamada ni compartiendo pantalla)",
+                  "Modo juego autom\u00e1tico al abrir FiveM, GTA V o el juego que elijas"
               ]
 }
