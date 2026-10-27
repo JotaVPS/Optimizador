@@ -1,10 +1,10 @@
 {
-    "version":  "3.5",
-    "sha256":  "8667C78606C2E27ABAA762453174695EFAEFC3175EC2E05086918F054B4DA858",
+    "version":  "3.6",
+    "sha256":  "0209C56027E3828719A3E219D2214E960D1EB1C6911B2F701D4A71167DA02FC9",
     "notas":  [
-                  "Abre desde Optimizador.exe: sin ventanas de cmd y con la paloma en el aviso de permisos",
-                  "Se actualiza solo desde GitHub",
-                  "Link \"Instalar\" siempre a mano abajo, aunque hayas dicho \"Ahora no\"",
-                  "Arreglos en la instalación y la desinstalación"
+                  "Nuevo: Red. Mide dónde están los picos (Wi-Fi, cable o proveedor) y aplica ajustes seguros, con Restaurar red",
+                  "Tarjeta de disco: clic para ver cada uno de tus discos",
+                  "Botón de actualizaciones arriba a la derecha y aviso cuando hay versión nueva",
+                  "Link \"Instalar\" siempre a mano abajo"
               ]
 }

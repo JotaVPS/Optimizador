@@ -11,7 +11,7 @@ exit /b
 # Para probar sin ventana:  Optimizador.bat -Accion diagnostico | limpieza -Simular
 # Para sacar una captura:   Optimizador.bat -Captura C:\ruta\captura.png
 param(
-    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar')]
+    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar', 'red', 'restaurarred')]
     [string]$Accion = '',
     [switch]$Simular,
     [string]$Captura = '',
@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.5'
+$Version = '3.6'
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -183,6 +183,18 @@ function Handle-Update($m) {
         if ($m.Manual) { Show-Dialogo 'Estás al día' "Tenés la última versión (v$Version)." 'Genial' '' 'info' | Out-Null }
         return
     }
+    # aviso arriba a la derecha (queda hasta que actualicen); el cartel solo salta si lo buscaron a mano
+    $script:UpdPendiente = $j
+    $ui.UpdPill.Content = "Actualización v$($j.version)"
+    $ui.UpdPill.Visibility = 'Visible'
+    $ui.BtnUpdate.Foreground = $Colores.accent
+    $ui.BtnUpdate.ToolTip = "Hay una versión nueva (v$($j.version))"
+    if ($m.Manual) { Ofrecer-Update }
+}
+
+function Ofrecer-Update {
+    $j = $script:UpdPendiente
+    if (-not $j) { return }
     $notas = if ($j.notas) { "`n`nNovedades:`n" + (($j.notas | ForEach-Object { "•  $_" }) -join "`n") } else { '' }
     $ok = Show-Dialogo "Hay una versión nueva (v$($j.version))" ("Tenés la v$Version." + $notas) 'Actualizar' 'Ahora no' 'descarga'
     if ($ok) { Install-Update $j }
@@ -422,6 +434,215 @@ $Core = {
         Log-Archivo 'Reparar: DISM + SFC'
     }
 
+    # ---------- RED ----------
+    # Solo cambios que se deshacen: antes de tocar nada guarda cómo estaba todo en red_respaldo.json
+    # (una sola vez, así "Restaurar red" siempre vuelve a lo original). No cambia DNS ni IP y no hace
+    # reset de winsock/TCP (eso sí puede dejar sin internet hasta reiniciar).
+    $RespaldoRed = Join-Path $Raiz 'red_respaldo.json'
+    # ahorro de energía de la placa (Ethernet y Wi-Fi): mete microcortes y picos; apagarlo no baja la velocidad.
+    # Se buscan por la clave del driver (no por el nombre, que cambia con el idioma) y solo si aceptan "0".
+    $AhorroPlaca = '*EEE', 'AdvancedEEE', 'EnableGreenEthernet', 'PowerSavingMode', 'GigaLite', '*PMARPOffload', '*PMNSOffload'
+    $SubWifi = '19cbb8fa-5279-450e-9fac-8a3d5fedd0c1'; $SetWifi = '12bbebe6-58d6-4636-95bb-3217ef867c1a'   # plan de energía > adaptador inalámbrico
+    $ClaveDO = 'Registry::HKEY_USERS\S-1-5-20\Software\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings'
+    $ClaveMM = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+
+    function Get-PlacaActiva {
+        $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object { $_.RouteMetric + $_.InterfaceMetric } | Select-Object -First 1
+        if (-not $r) { return $null }
+        $a = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex
+        if ($a) { $a | Add-Member -NotePropertyName Gateway -NotePropertyValue $r.NextHop -PassThru }
+    }
+    function Medir-Ping($destino, $n = 20) {
+        $ping = New-Object Net.NetworkInformation.Ping
+        $t = @(); $perd = 0
+        for ($i = 0; $i -lt $n; $i++) {
+            try { $r = $ping.Send($destino, 1000); if ($r.Status -eq 'Success') { $t += [int]$r.RoundtripTime } else { $perd++ } } catch { $perd++ }
+            Start-Sleep -Milliseconds 120
+        }
+        if (-not $t) { return $null }
+        # jitter: cuánto salta de un ping al siguiente (lo que se siente como tirones en el juego)
+        $jit = if ($t.Count -gt 1) { (@(for ($i = 1; $i -lt $t.Count; $i++) { [math]::Abs($t[$i] - $t[$i - 1]) }) | Measure-Object -Average).Average } else { 0 }
+        [pscustomobject]@{ Prom = ($t | Measure-Object -Average).Average; Max = ($t | Measure-Object -Maximum).Maximum; Jitter = $jit; Perdidos = $perd; N = $n }
+    }
+    function Out-Ping($nombre, $m) {
+        if (-not $m) { Out-Line ("  {0,-10} sin respuesta" -f $nombre) 'err'; return }
+        $k = if ($m.Perdidos -or $m.Jitter -gt 15 -or $m.Max -gt 150) { 'warn' } else { 'ok' }
+        Out-Line ("  {0,-10} {1,4:N0} ms   máx {2,4} ms   jitter {3,4:N1} ms   perdidos {4}/{5}" -f $nombre, $m.Prom, $m.Max, $m.Jitter, $m.Perdidos, $m.N) $k
+    }
+    function Get-WifiPlan {
+        $q = (powercfg /q SCHEME_CURRENT $SubWifi $SetWifi) -join "`n"
+        $v = [regex]::Matches($q, ':\s*0x([0-9a-fA-F]{8})')
+        if ($v.Count -ge 2) { @{ AC = [Convert]::ToInt32($v[0].Groups[1].Value, 16); DC = [Convert]::ToInt32($v[1].Groups[1].Value, 16) } }
+    }
+    function Esperar-Red($gateway, $segundos = 30) {
+        # después de reiniciar la placa la conexión tarda unos segundos en volver
+        $ping = New-Object Net.NetworkInformation.Ping
+        $hasta = (Get-Date).AddSeconds($segundos)
+        while ((Get-Date) -lt $hasta) {
+            try { if ($ping.Send($gateway, 1000).Status -eq 'Success') { return $true } } catch { }
+            Start-Sleep -Seconds 1
+        }
+        $false
+    }
+
+    function Diagnostico-Red($placa) {
+        Out-Line ("  Conexión: {0} ({1})" -f $placa.Name, $placa.InterfaceDescription) 'dim'
+        if ($placa.PhysicalMediaType -match '802\.11|Wireless' -or $placa.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN|802\.11') {
+            $w = (netsh wlan show interfaces) -join "`n"
+            $senal = if ($w -match '(\d+)\s*%') { [int]$Matches[1] } else { $null }
+            $banda = if ($w -match '(\d(?:[\.,]\d)?)\s*GHz') { $Matches[1] -replace ',', '.' } else { $null }
+            if ($senal -ne $null) { Out-Line ("  Wi-Fi: señal {0}%{1}" -f $senal, $(if ($banda) { "  ·  banda $banda GHz" } else { '' })) $(if ($senal -lt 60) { 'warn' } else { 'ok' }) }
+            if ($senal -ne $null -and $senal -lt 60) { Out-Line '    Señal baja: acercate al router o sacá obstáculos (paredes, el gabinete tapando la antena).' 'warn' }
+            if ($banda -eq '2.4') { Out-Line '    Estás en 2.4 GHz: si el router tiene red de 5 GHz, conectate a esa (menos interferencia y menos ping).' 'warn' }
+            Out-Line '    Para jugar, un cable siempre gana: el Wi-Fi tiene picos que ningún ajuste saca del todo.' 'dim'
+        } else {
+            # placa Gigabit conectada a 100 Mbps: casi siempre el cable (viejo o dañado) o el puerto del router
+            $mbps = [math]::Round($placa.ReceiveLinkSpeed / 1e6)
+            $giga = (Get-NetAdapterAdvancedProperty -Name $placa.Name -RegistryKeyword '*SpeedDuplex').ValidRegistryValues -contains '6'
+            if ($giga -and $mbps -lt 1000) {
+                Out-Line ("  Cable: conectado a {0} Mbps, pero la placa da 1000 Mbps" -f $mbps) 'warn'
+                Out-Line '    Probá otro cable (Cat5e o Cat6) u otro puerto del router. Si tu plan es de más de 100 megas, lo estás perdiendo ahí.' 'warn'
+            } else { Out-Line ("  Cable: conectado a {0} Mbps" -f $mbps) 'ok' }
+        }
+        Set-Prog 25 'Midiendo latencia al router'
+        $mr = Medir-Ping $placa.Gateway
+        Out-Ping 'Router' $mr
+        Set-Prog 45 'Midiendo latencia a internet'
+        $mi = Medir-Ping '1.1.1.1'
+        Out-Ping 'Internet' $mi
+        if ($mr -and ($mr.Perdidos -or $mr.Jitter -gt 5 -or $mr.Max -gt 30)) {
+            Out-Line '    Hay saltos ya dentro de tu casa (PC → router): el problema es el Wi-Fi o el cable, no el proveedor.' 'warn'
+        } elseif ($mi -and ($mi.Perdidos -or $mi.Jitter -gt 15 -or $mi.Max -gt 150)) {
+            Out-Line '    Hasta el router anda bien; los picos aparecen afuera. Suele ser alguien descargando en la casa' 'warn'
+            Out-Line '    (si el router tiene QoS o "SQM", activalo) o el proveedor en horario pico.' 'warn'
+        }
+        $mi
+    }
+
+    function Hacer-Red {
+        Out-Line 'RED' 'title'
+        Set-Prog 5 'Buscando la conexión'
+        $placa = Get-PlacaActiva
+        if (-not $placa) { Out-Line '  No hay conexión a internet activa.' 'err'; return }
+        $antes = Diagnostico-Red $placa
+        if (-not $EsAdmin) { Out-Line ''; Out-Line '  Para aplicar los ajustes hacen falta permisos de administrador.' 'warn'; return }
+
+        Out-Line ''
+        Out-Line 'AJUSTES' 'title'
+        Set-Prog 55 'Guardando cómo está todo'
+        $guid = $placa.InterfaceGuid
+        $claveIf = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+        $props = @(Get-NetAdapterAdvancedProperty -Name $placa.Name -AllProperties | Where-Object { $AhorroPlaca -contains $_.RegistryKeyword -and $_.ValidRegistryValues -contains '0' })
+        if (-not (Test-Path -LiteralPath $RespaldoRed)) {
+            $mm = Get-ItemProperty $ClaveMM
+            $resp = [ordered]@{
+                Fecha = (Get-Date).ToString('s'); Placa = $placa.Name; Guid = $guid
+                AutoTuning = [string](Get-NetTCPSetting -SettingName Internet).AutoTuningLevelLocal
+                Throttling = $mm.NetworkThrottlingIndex; Responsiveness = $mm.SystemResponsiveness
+                DO = (Get-ItemProperty $ClaveDO).DownloadMode
+                AckFreq = (Get-ItemProperty $claveIf).TcpAckFrequency; NoDelay = (Get-ItemProperty $claveIf).TCPNoDelay
+                Props = @($props | ForEach-Object { @{ K = $_.RegistryKeyword; V = [string]$_.RegistryValue[0] } })
+                Wifi = Get-WifiPlan
+            }
+            if (-not (Test-Path $Raiz)) { New-Item -ItemType Directory -Path $Raiz | Out-Null }
+            $resp | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $RespaldoRed -Encoding UTF8
+            Out-Line '  Respaldo guardado: "Restaurar red" lo deja todo como estaba.' 'dim'
+        }
+
+        Set-Prog 65 'Aplicando'
+        # autoajuste de TCP: algunos "optimizadores" lo apagan y eso limita la velocidad de descarga
+        if ((Get-NetTCPSetting -SettingName Internet).AutoTuningLevelLocal -ne 'Normal') {
+            netsh int tcp set global autotuninglevel=normal | Out-Null
+            Out-Line ("  {0,-44}{1}" -f 'Autoajuste de TCP', 'normal (estaba limitado)') 'ok'
+        } else { Out-Line ("  {0,-44}{1}" -f 'Autoajuste de TCP', 'ya estaba bien') 'dim' }
+        # que Windows no frene el tráfico de red mientras corre audio/video (juego + Discord)
+        Set-ItemProperty $ClaveMM -Name NetworkThrottlingIndex -Value ([int]-1) -Type DWord
+        Set-ItemProperty $ClaveMM -Name SystemResponsiveness -Value 10 -Type DWord
+        Out-Line ("  {0,-44}{1}" -f 'Límite de red con multimedia', 'sacado') 'ok'
+        # Windows Update no sube actualizaciones a PCs de desconocidos por internet (solo red local)
+        if (-not (Test-Path $ClaveDO)) { New-Item -Path $ClaveDO -Force | Out-Null }
+        Set-ItemProperty $ClaveDO -Name DownloadMode -Value 1 -Type DWord
+        Out-Line ("  {0,-44}{1}" -f 'Windows Update subiendo a otras PCs', 'solo red local') 'ok'
+        # paquetes chicos sin demora (Nagle): ayuda en juegos que van por TCP
+        Set-ItemProperty $claveIf -Name TcpAckFrequency -Value 1 -Type DWord
+        Set-ItemProperty $claveIf -Name TCPNoDelay -Value 1 -Type DWord
+        Out-Line ("  {0,-44}{1}" -f 'Envío de paquetes chicos sin demora', 'activado') 'ok'
+        $wifi = Get-WifiPlan
+        if ($wifi -and $wifi.AC -ne 0) {
+            powercfg /setacvalueindex SCHEME_CURRENT $SubWifi $SetWifi 0 | Out-Null
+            powercfg /setactive SCHEME_CURRENT | Out-Null
+            Out-Line ("  {0,-44}{1}" -f 'Wi-Fi enchufado', 'rendimiento máximo') 'ok'
+        }
+        ipconfig /flushdns | Out-Null
+        netsh interface ip delete arpcache | Out-Null
+        Out-Line ("  {0,-44}{1}" -f 'Cachés de DNS y ARP', 'vaciadas') 'ok'
+
+        $cambiar = @($props | Where-Object { [string]$_.RegistryValue[0] -ne '0' })
+        if ($cambiar) {
+            Set-Prog 75 'Placa de red: sacando el ahorro de energía'
+            Out-Line ("  {0,-44}{1}" -f 'Ahorro de energía de la placa', "apagado ($($cambiar.Count))") 'ok'
+            foreach ($p in $cambiar) { Set-NetAdapterAdvancedProperty -Name $placa.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue '0' -NoRestart }
+        }
+        # reinicio de la placa: aplica Nagle y el ahorro de energía; si la conexión no vuelve, se deshace todo
+        Out-Line '  Se reinicia la placa de red: la conexión se corta unos segundos.' 'warn'
+        Set-Prog 80 'Reiniciando la placa de red'
+        Restart-NetAdapter -Name $placa.Name -Confirm:$false
+        Set-Prog 82 'Esperando que vuelva la conexión'
+        if (-not (Esperar-Red $placa.Gateway)) {
+            Out-Line '  La conexión no volvió: deshaciendo los cambios.' 'err'
+            Hacer-RestaurarRed $true
+            return
+        }
+        Start-Sleep -Seconds 3   # la placa recién levantada da pings altos los primeros segundos
+
+        Out-Line ''
+        Out-Line 'DESPUÉS' 'title'
+        Set-Prog 90 'Midiendo de nuevo'
+        $despues = Medir-Ping '1.1.1.1'
+        Out-Ping 'Internet' $despues
+        if ($antes -and $despues) {
+            Out-Line ''
+            Out-Line ("Internet: {0:N0} ms → {1:N0} ms   ·   jitter {2:N1} → {3:N1} ms" -f $antes.Prom, $despues.Prom, $antes.Jitter, $despues.Jitter) 'title'
+        }
+        Out-Line 'El ping a internet depende sobre todo del proveedor: los ajustes sacan los cortes y picos de tu lado.' 'dim'
+        Log-Archivo ("Red: ajustes aplicados en {0}" -f $placa.Name)
+    }
+
+    function Hacer-RestaurarRed([bool]$automatico = $false) {
+        if (-not $automatico) { Out-Line 'RESTAURAR RED' 'title' }
+        if (-not $EsAdmin) { Out-Line '  Necesita permisos de administrador.' 'err'; return }
+        if (-not (Test-Path -LiteralPath $RespaldoRed)) { Out-Line '  No hay nada para restaurar: los ajustes de red nunca se aplicaron.' 'ok'; return }
+        Set-Prog 30 'Volviendo todo a como estaba'
+        $r = Get-Content -LiteralPath $RespaldoRed -Raw -Encoding UTF8 | ConvertFrom-Json
+        $claveIf = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($r.Guid)"
+        $nivel = @{ Normal = 'normal'; Disabled = 'disabled'; Restricted = 'restricted'; HighlyRestricted = 'highlyrestricted'; Experimental = 'experimental' }[$r.AutoTuning]
+        if ($nivel) { netsh int tcp set global autotuninglevel=$nivel | Out-Null }
+        # valor que no existía antes: se borra en vez de dejarlo en otro número
+        function Volver($clave, $nombre, $valor) {
+            if ($null -eq $valor) { Remove-ItemProperty -Path $clave -Name $nombre }
+            else { Set-ItemProperty -Path $clave -Name $nombre -Value ([int]$valor) -Type DWord }
+        }
+        Volver $ClaveMM 'NetworkThrottlingIndex' $r.Throttling
+        Volver $ClaveMM 'SystemResponsiveness' $r.Responsiveness
+        Volver $ClaveDO 'DownloadMode' $r.DO
+        Volver $claveIf 'TcpAckFrequency' $r.AckFreq
+        Volver $claveIf 'TCPNoDelay' $r.NoDelay
+        if ($r.Wifi) {
+            powercfg /setacvalueindex SCHEME_CURRENT $SubWifi $SetWifi $r.Wifi.AC | Out-Null
+            powercfg /setactive SCHEME_CURRENT | Out-Null
+        }
+        foreach ($p in $r.Props) { Set-NetAdapterAdvancedProperty -Name $r.Placa -RegistryKeyword $p.K -RegistryValue $p.V -NoRestart }
+        Set-Prog 60 'Reiniciando la placa de red'
+        Restart-NetAdapter -Name $r.Placa -Confirm:$false
+        $gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop
+        Set-Prog 80 'Esperando que vuelva la conexión'
+        $volvio = if ($gw) { Esperar-Red $gw } else { Start-Sleep -Seconds 10; $true }
+        Remove-Item -LiteralPath $RespaldoRed -Force
+        Out-Line '  Red restaurada: todo quedó como estaba antes de los ajustes.' 'ok'
+        if (-not $volvio) { Out-Line '  La conexión todavía no volvió: esperá unos segundos o desconectá y conectá el cable / Wi-Fi.' 'warn' }
+        Log-Archivo 'Red: restaurada'
+    }
+
     function Invoke-Accion($a) {
         switch ($a) {
             'limpieza'    { Hacer-Limpieza }
@@ -429,6 +650,8 @@ $Core = {
             'todo'        { Hacer-Limpieza; Out-Line ''; Hacer-ModoJuego; Out-Line ''; Out-Line 'Sistema listo para jugar' 'title' }
             'diagnostico' { Hacer-Diagnostico }
             'reparar'     { Hacer-Reparar }
+            'red'         { Hacer-Red }
+            'restaurarred' { Hacer-RestaurarRed }
         }
         Set-Prog 100 'Listo'
     }
@@ -706,6 +929,23 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
           <TextBlock Text="Optimizador Windows" Foreground="{DynamicResource Muted}" FontSize="12" Margin="10,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,8,0">
+          <!-- aparece solo cuando hay versión nueva; el botón de al lado busca a mano -->
+          <Button x:Name="UpdPill" Content="Actualización disponible" Cursor="Hand" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="Collapsed" ToolTip="Ver novedades y actualizar">
+            <Button.Template>
+              <ControlTemplate TargetType="Button">
+                <Border x:Name="b" CornerRadius="11" Background="{DynamicResource Grad}" Padding="11,4">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="{DynamicResource PrimaryFg}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <ContentPresenter VerticalAlignment="Center" TextElement.FontSize="11.5" TextElement.FontWeight="SemiBold" TextElement.Foreground="{DynamicResource PrimaryFg}"/>
+                  </StackPanel>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.85"/></Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+          <Button x:Name="BtnUpdate" Style="{StaticResource WinBtn}" Content="&#xE895;" FontSize="14" ToolTip="Buscar actualizaciones"/>
           <Button x:Name="BtnTema" Style="{StaticResource WinBtn}" Content="&#xE790;" FontSize="14" ToolTip="Tema"/>
           <Button x:Name="BtnOverlay" Style="{StaticResource WinBtn}" Content="&#xE7F4;" FontSize="14" ToolTip="Datos en pantalla (Ctrl+Shift+O)"/>
           <Button x:Name="BtnMin" Style="{StaticResource WinBtn}" Content="&#xE921;"/>
@@ -744,8 +984,15 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
               <Border Style="{StaticResource Stat}">
                 <StackPanel><TextBlock Text="MEMORIA" Style="{StaticResource StatLabel}"/><TextBlock x:Name="StatRam" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatRamSub" Text="" Style="{StaticResource StatLabel}"/></StackPanel>
               </Border>
-              <Border Style="{StaticResource Stat}">
-                <StackPanel><TextBlock Text="DISCO C:" Style="{StaticResource StatLabel}"/><TextBlock x:Name="StatDisk" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatDiskSub" Text="" Style="{StaticResource StatLabel}"/></StackPanel>
+              <!-- con varios discos: clic en la tarjeta pasa al siguiente -->
+              <Border x:Name="DiskCard" Style="{StaticResource Stat}">
+                <StackPanel>
+                  <DockPanel>
+                    <TextBlock x:Name="StatDiskNav" DockPanel.Dock="Right" Text="" Style="{StaticResource StatLabel}" Foreground="{DynamicResource Accent}"/>
+                    <TextBlock x:Name="StatDiskLabel" Text="DISCO C:" Style="{StaticResource StatLabel}"/>
+                  </DockPanel>
+                  <TextBlock x:Name="StatDisk" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatDiskSub" Text="" Style="{StaticResource StatLabel}"/>
+                </StackPanel>
               </Border>
               <Border Style="{StaticResource Stat}">
                 <StackPanel><TextBlock Text="ESTABILIDAD" Style="{StaticResource StatLabel}"/><TextBlock x:Name="StatBsod" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatBsodSub" Text="" Style="{StaticResource StatLabel}"/></StackPanel>
@@ -768,18 +1015,24 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
             </Button>
           </StackPanel>
 
-          <UniformGrid Columns="2" Rows="2" Margin="-6,-6,-6,14">
+          <UniformGrid Columns="3" Rows="2" Margin="-6,-6,-6,14">
             <Button x:Name="BtnLimpieza" Style="{StaticResource Card}" Margin="6">
-              <StackPanel><TextBlock Text="&#xE74D;" Style="{StaticResource Icon}"/><TextBlock Text="Limpieza" Style="{StaticResource CardTitle}"/><TextBlock Text="Temporales, cachés y Windows Update" Style="{StaticResource CardSub}"/></StackPanel>
+              <StackPanel><TextBlock Text="&#xE74D;" Style="{StaticResource Icon}"/><TextBlock Text="Limpieza" Style="{StaticResource CardTitle}"/><TextBlock Text="Temporales y cachés" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
             <Button x:Name="BtnJuego" Style="{StaticResource Card}" Margin="6">
-              <StackPanel><TextBlock Text="&#xE7FC;" Style="{StaticResource Icon}"/><TextBlock Text="Modo juego" Style="{StaticResource CardTitle}"/><TextBlock Text="Cierra launchers y apps de fondo" Style="{StaticResource CardSub}"/></StackPanel>
+              <StackPanel><TextBlock Text="&#xE7FC;" Style="{StaticResource Icon}"/><TextBlock Text="Modo juego" Style="{StaticResource CardTitle}"/><TextBlock Text="Cierra apps de fondo" Style="{StaticResource CardSub}"/></StackPanel>
+            </Button>
+            <Button x:Name="BtnRed" Style="{StaticResource Card}" Margin="6">
+              <StackPanel><TextBlock Text="&#xE701;" Style="{StaticResource Icon}"/><TextBlock Text="Red" Style="{StaticResource CardTitle}"/><TextBlock Text="Menos picos y cortes" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
             <Button x:Name="BtnDiag" Style="{StaticResource Card}" Margin="6">
-              <StackPanel><TextBlock Text="&#xE9D9;" Style="{StaticResource Icon}"/><TextBlock Text="Diagnóstico" Style="{StaticResource CardTitle}"/><TextBlock Text="RAM, pantallazos, discos y arranque" Style="{StaticResource CardSub}"/></StackPanel>
+              <StackPanel><TextBlock Text="&#xE9D9;" Style="{StaticResource Icon}"/><TextBlock Text="Diagnóstico" Style="{StaticResource CardTitle}"/><TextBlock Text="RAM, pantallazos y discos" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
             <Button x:Name="BtnReparar" Style="{StaticResource Card}" Margin="6">
-              <StackPanel><TextBlock Text="&#xE90F;" Style="{StaticResource Icon}"/><TextBlock Text="Reparar Windows" Style="{StaticResource CardTitle}"/><TextBlock Text="DISM + SFC (10 a 30 min)" Style="{StaticResource CardSub}"/></StackPanel>
+              <StackPanel><TextBlock Text="&#xE90F;" Style="{StaticResource Icon}"/><TextBlock Text="Reparar Windows" Style="{StaticResource CardTitle}"/><TextBlock Text="DISM + SFC (10-30 min)" Style="{StaticResource CardSub}"/></StackPanel>
+            </Button>
+            <Button x:Name="BtnRestaurarRed" Style="{StaticResource Card}" Margin="6">
+              <StackPanel><TextBlock Text="&#xE777;" Style="{StaticResource Icon}"/><TextBlock Text="Restaurar red" Style="{StaticResource CardTitle}"/><TextBlock Text="Vuelve a como estaba" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
           </UniformGrid>
         </DockPanel>
@@ -889,6 +1142,7 @@ function Set-Tema([string]$nombre, [bool]$claro, [bool]$inicial = $false) {
     Apply-Admin
     Update-Stats
     $ui.BtnOverlay.Foreground = if ($ov.IsVisible) { $Colores.accent } else { $Colores.muted }
+    $ui.BtnUpdate.Foreground = if ($script:UpdPendiente) { $Colores.accent } else { $Colores.muted }
     if ($ov.IsVisible) { Update-Overlay }
     Save-Cfg
 }
@@ -976,9 +1230,7 @@ function Update-Stats {
     $os = Get-CimInstance Win32_OperatingSystem
     $ui.StatRam.Text = '{0} GB' -f (($mods | Measure-Object Capacity -Sum).Sum / 1GB)
     $ui.StatRamSub.Text = '{0} MHz' -f $mods[0].ConfiguredClockSpeed
-    $c = Get-Volume -DriveLetter C
-    $ui.StatDisk.Text = '{0} GB' -f [math]::Round($c.SizeRemaining / 1GB)
-    $ui.StatDiskSub.Text = 'libres de {0} GB' -f [math]::Round($c.Size / 1GB)
+    Show-Disco
     $n = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = (Get-Date).AddDays(-7) }).Count
     if ($n -eq 0) { $ui.StatBsod.Text = 'Estable'; $ui.StatBsod.Foreground = $Colores.ok }
     else { $ui.StatBsod.Text = "$n BSOD"; $ui.StatBsod.Foreground = $Colores.err }
@@ -991,10 +1243,42 @@ function Update-Stats {
     $ui.StatUp.Foreground = if ($up.TotalDays -gt 7) { $Colores.warn } else { $Colores.text }
 }
 
+# ---------- tarjeta de disco: con varios discos, clic pasa al siguiente ----------
+# solo discos fijos (sin pendrives ni lectoras); el elegido queda guardado en la config
+function Get-Discos { @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.Size } | Sort-Object DriveLetter) }
+function Get-IndiceDisco($discos) {
+    $letras = @($discos | ForEach-Object { [string]$_.DriveLetter })
+    $i = [array]::IndexOf($letras, [string]$cfg.Disco)
+    if ($i -lt 0) { $i = [array]::IndexOf($letras, 'C') }   # el guardado ya no está (desconectado): vuelve a C:
+    [math]::Max($i, 0)
+}
+function Show-Disco {
+    $discos = Get-Discos
+    if (-not $discos) { return }
+    $i = Get-IndiceDisco $discos
+    $d = $discos[$i]
+    $ui.StatDiskLabel.Text = 'DISCO {0}:' -f $d.DriveLetter
+    $ui.StatDiskNav.Text = if ($discos.Count -gt 1) { '{0}/{1}  ›' -f ($i + 1), $discos.Count } else { '' }
+    $ui.StatDisk.Text = '{0} GB' -f [math]::Round($d.SizeRemaining / 1GB)
+    $ui.StatDiskSub.Text = 'libres de {0} GB' -f [math]::Round($d.Size / 1GB)
+    # menos de 10% libre: en amarillo, como el resto de las alertas
+    $ui.StatDisk.Foreground = if ($d.SizeRemaining / $d.Size -lt 0.1) { $Colores.warn } else { $Colores.text }
+    $nombre = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { 'Disco local' }
+    $ui.DiskCard.ToolTip = if ($discos.Count -gt 1) { "$nombre ($($d.DriveLetter):) · clic para ver otro disco" } else { "$nombre ($($d.DriveLetter):)" }
+    $ui.DiskCard.Cursor = if ($discos.Count -gt 1) { 'Hand' } else { $null }
+}
+$ui.DiskCard.Add_MouseLeftButtonUp({
+    $discos = Get-Discos
+    if ($discos.Count -lt 2) { return }
+    $cfg.Disco = [string]$discos[((Get-IndiceDisco $discos) + 1) % $discos.Count].DriveLetter
+    Save-Cfg
+    Show-Disco
+})
+
 # ---------- ejecutar acciones en segundo plano ----------
 $sync = [hashtable]::Synchronized(@{ Q = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]' })
 $script:Job = $null
-$Botones = 'BtnTodo', 'BtnLimpieza', 'BtnJuego', 'BtnDiag', 'BtnReparar'
+$Botones = 'BtnTodo', 'BtnLimpieza', 'BtnJuego', 'BtnRed', 'BtnDiag', 'BtnReparar', 'BtnRestaurarRed'
 
 function Start-Accion($accion) {
     if ($script:Job) { return }
@@ -1083,6 +1367,20 @@ $ui.BtnMin.Add_Click({ $win.WindowState = 'Minimized' })
 $ui.BtnClose.Add_Click({ Hide-Main })
 $ui.BtnOverlay.Add_Click({ Set-Overlay (-not $ov.IsVisible) })
 $ui.BtnTema.Add_Click({ Show-MenuTemas })
+# con una versión nueva ya encontrada, los dos abren el cartel; si no, busca a mano
+$ui.UpdPill.Add_Click({ Ofrecer-Update })
+$ui.BtnUpdate.Add_Click({ if ($script:UpdPendiente) { Ofrecer-Update } else { Start-BuscarUpdate $true } })
+$ui.BtnRed.Add_Click({
+    $ok = Show-Dialogo 'Red' "Mide tu conexión, te dice dónde están los picos (Wi-Fi, cable o proveedor) y aplica ajustes seguros: autoajuste de TCP, ahorro de energía de la placa, límite de red con multimedia, Windows Update sin subir a otras PCs y paquetes sin demora.`n`nNo cambia DNS ni IP. Se guarda cómo estaba todo y 'Restaurar red' lo deja igual.`n`nLa conexión se corta unos segundos al final." 'Arrancar' 'Cancelar' 'pregunta'
+    if ($ok) { Start-Accion 'red' }
+})
+$ui.BtnRestaurarRed.Add_Click({
+    if (-not (Test-Path -LiteralPath (Join-Path $Raiz 'red_respaldo.json'))) {
+        Show-Dialogo 'Restaurar red' 'No hay nada para restaurar: los ajustes de red nunca se aplicaron en esta PC.' 'OK' '' 'info' | Out-Null; return
+    }
+    $ok = Show-Dialogo 'Restaurar red' "Vuelve la red exactamente a como estaba antes de los ajustes.`n`nLa conexión se corta unos segundos." 'Restaurar' 'Cancelar' 'alerta'
+    if ($ok) { Start-Accion 'restaurarred' }
+})
 $ui.BtnTodo.Add_Click({ Start-Accion 'todo' })
 $ui.BtnLimpieza.Add_Click({ Start-Accion 'limpieza' })
 $ui.BtnJuego.Add_Click({ Start-Accion 'juego' })
@@ -1102,6 +1400,12 @@ Borra temporales, caché de miniaturas, descargas viejas de Windows Update, repo
 MODO JUEGO
 Cierra programas de fondo (OneDrive, Widgets, Epic, EA, BlueStacks, Adobe, Autodesk, Gaijin, uTorrent). Vuelven a abrirse solos al reiniciar. No toca Steam, Discord, navegadores ni anticheats.
 
+RED
+Mide el ping al router y a internet para saber si los picos vienen del Wi-Fi, del cable o del proveedor, y avisa si el cable va a 100 Mbps en una placa Gigabit. Después aplica ajustes seguros: autoajuste de TCP en normal, apaga el ahorro de energía de la placa, saca el límite de red con multimedia, Windows Update deja de subir a PCs de desconocidos y los paquetes chicos salen sin demora. Mide de nuevo y compara. Si la conexión no vuelve, deshace todo solo.
+
+RESTAURAR RED
+Deja la red exactamente como estaba antes de los ajustes (se guarda un respaldo la primera vez).
+
 DIAGNÓSTICO
 Velocidad de la RAM, pantallazos azules de la última semana, espacio y salud de los discos, programas de arranque y driver de video.
 
@@ -1109,7 +1413,7 @@ REPARAR WINDOWS
 DISM + SFC: revisa los archivos de Windows y arregla los dañados. Tarda 10 a 30 minutos.
 
 QUÉ NO HACE
-No borra fotos, documentos, descargas ni la Papelera. No toca el registro, servicios ni el BIOS. No manda datos a ningún lado (solo hace un ping a 1.1.1.1 para medir tu latencia en pantalla y una vez por día se fija en GitHub si hay versión nueva).
+No borra fotos, documentos, descargas ni la Papelera. No toca servicios ni el BIOS, y en el registro solo cambia los ajustes de Red (con respaldo). No cambia tu DNS ni tu IP. No manda datos a ningún lado (solo hace un ping a 1.1.1.1 para medir tu latencia en pantalla y una vez por día se fija en GitHub si hay versión nueva).
 
 DATOS EN PANTALLA
 Ctrl+Shift+O los muestra u oculta desde cualquier lado, incluso jugando. También el botón del monitor (arriba) o click derecho en la paloma de la bandeja. Se pueden arrastrar, y con click derecho elegís la esquina. Se ven en juegos en ventana o pantalla completa sin bordes.
@@ -1217,7 +1521,7 @@ $cfg = @{ Overlay = $false; Pos = 'TR'; Left = 0; Top = 0; Tema = 'Esmeralda'; C
           Datos = @('logo', 'cpu', 'ram', 'gpu', 'temp', 'vram', 'ping', 'hora') }
 if (Test-Path $cfgPath) {
     $j = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    foreach ($k in 'Overlay', 'Pos', 'Left', 'Top', 'Tema', 'Claro', 'Datos', 'NoInstalar') { if ($null -ne $j.$k) { $cfg[$k] = $j.$k } }
+    foreach ($k in 'Overlay', 'Pos', 'Left', 'Top', 'Tema', 'Claro', 'Datos', 'NoInstalar', 'Disco') { if ($null -ne $j.$k) { $cfg[$k] = $j.$k } }
 }
 function Save-Cfg {
     if ($Captura) { return }   # las capturas de prueba no tocan tu configuración
