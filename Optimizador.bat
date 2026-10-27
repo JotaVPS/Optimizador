@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.7'
+$Version = '3.8'
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -1420,7 +1420,40 @@ function End-Accion {
     Update-Stats
     # la captura espera a que el overlay tenga datos (la saca el timer del overlay)
     if ($Captura) { $script:CapturaLista = Get-Date; return }
-    try { (New-Object Media.SoundPlayer "$env:WINDIR\Media\notify.wav").Play() } catch { }
+    Play-Listo
+}
+
+# Sonido de "listo": dos notas que suben (La5 → Mi6), suaves y cortas, generadas acá (sin archivos).
+# Cada nota: seno + un poco de octava arriba (brillo tipo cristal), ataque de 6 ms y cola que se apaga sola.
+function New-SonidoListo {
+    $hz = 44100; $dur = 0.55; $n = [int]($hz * $dur)
+    $notas = @(@{ F = 880.0; T0 = 0.0; Vol = 0.20 }, @{ F = 1318.5; T0 = 0.085; Vol = 0.24 })
+    $pcm = New-Object byte[] ($n * 2)
+    for ($i = 0; $i -lt $n; $i++) {
+        $t = $i / $hz; $s = 0.0
+        foreach ($o in $notas) {
+            $u = $t - $o.T0
+            if ($u -lt 0) { continue }
+            $env = [math]::Min(1, $u / 0.006) * [math]::Exp(-$u * 9)
+            $w = 2 * [math]::PI * $o.F * $u
+            $s += $o.Vol * $env * ([math]::Sin($w) + 0.18 * [math]::Sin(2 * $w))
+        }
+        $v = [int16][math]::Max(-32767, [math]::Min(32767, $s * 32767))
+        $pcm[2 * $i] = $v -band 0xFF; $pcm[2 * $i + 1] = ($v -shr 8) -band 0xFF
+    }
+    # encabezado WAV: PCM 16 bits mono
+    $ms = New-Object IO.MemoryStream; $w = New-Object IO.BinaryWriter $ms
+    $w.Write([Text.Encoding]::ASCII.GetBytes('RIFF')); $w.Write([int](36 + $pcm.Length)); $w.Write([Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+    $w.Write([int]16); $w.Write([int16]1); $w.Write([int16]1); $w.Write([int]$hz); $w.Write([int]($hz * 2)); $w.Write([int16]2); $w.Write([int16]16)
+    $w.Write([Text.Encoding]::ASCII.GetBytes('data')); $w.Write([int]$pcm.Length); $w.Write($pcm)
+    $w.Flush(); $ms.Position = 0
+    $p = New-Object Media.SoundPlayer $ms; $p.Load(); $p
+}
+function Play-Listo {
+    try {
+        if (-not $script:SonidoListo) { $script:SonidoListo = New-SonidoListo }   # se arma una vez y queda en memoria
+        $script:SonidoListo.Play()
+    } catch { }
 }
 
 function Save-Captura {

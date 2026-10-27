@@ -1,7 +1,8 @@
 {
-    "version":  "3.7",
-    "sha256":  "A5106D817B502EB8650674169784208E8BB8576609CA6C3A9BF9891B57E13824",
+    "version":  "3.8",
+    "sha256":  "03402D84FD03AE4D1E6D54D336F5E73F43216DDCF1E9034F3AE62DF123877F25",
     "notas":  [
+                  "Sonido nuevo al terminar cada acci\u00f3n",
                   "Al actualizar se ve el progreso (descarga, verificaci\u00f3n, instalaci\u00f3n) y la app no se cierra hasta que abre la nueva",
                   "Selector de discos: flechita con men\u00fa, cada disco con su nombre y espacio libre"
               ]
