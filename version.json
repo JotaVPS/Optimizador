@@ -1,10 +1,7 @@
 {
-    "version":  "3.11",
-    "sha256":  "5CF9B924B82CEC9C8A26E236D5B91F22BFC5A99C0AB85B64977FE5182327976C",
+    "version":  "3.12",
+    "sha256":  "03463EB2BE0F1823CC690B148B4ACEBBCE35375FB5AB636C7305583BD7D859BA",
     "notas":  [
-                  "Todo para jugar ahora tambi\u00e9n pone la energ\u00eda al m\u00e1ximo y apaga la grabaci\u00f3n de la Game Bar (vuelve a como estaba al cerrar)",
-                  "Punto de restauraci\u00f3n de Windows antes de Red y Reparar",
-                  "Diagn\u00f3stico: pantallazos azules explicados con qu\u00e9 probar primero, y aviso si la RAM va m\u00e1s lenta de lo que da",
-                  "Restaurar ajustes: deshace Red y Todo para jugar"
+                  "Textos de las tarjetas con may\u00fascula inicial"
               ]
 }

@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.11'
+$Version = '3.12'
 # el programa tal cual se abrió: si corre desde la copia instalada y la desinstalan, Instalar la reescribe desde acá
 $Fuente = try { [IO.File]::ReadAllBytes($Archivo) } catch { $null }
 
@@ -1484,12 +1484,12 @@ function Update-Stats {
     $n = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = (Get-Date).AddDays(-7) }).Count
     if ($n -eq 0) { $ui.StatBsod.Text = 'Estable'; $ui.StatBsod.Foreground = $Colores.ok }
     else { $ui.StatBsod.Text = "$n BSOD"; $ui.StatBsod.Foreground = $Colores.err }
-    $ui.StatBsodSub.Text = 'últimos 7 días'
+    $ui.StatBsodSub.Text = 'Últimos 7 días'
     $up = (Get-Date) - $os.LastBootUpTime
     $ui.StatUp.Text = if ($up.TotalDays -ge 1) { '{0:N0} d' -f [math]::Floor($up.TotalDays) }
                       elseif ($up.TotalHours -ge 1) { '{0:N0} h' -f [math]::Floor($up.TotalHours) }
                       else { '{0:N0} min' -f [math]::Floor($up.TotalMinutes) }
-    $ui.StatUpSub.Text = 'sin reiniciar'
+    $ui.StatUpSub.Text = 'Sin reiniciar'
     $ui.StatUp.Foreground = if ($up.TotalDays -gt 7) { $Colores.warn } else { $Colores.text }
 }
 
@@ -1510,7 +1510,7 @@ function Show-Disco {
     $ui.StatDiskLabel.Text = 'DISCO {0}:' -f $d.DriveLetter
     $ui.StatDiskNav.Text = if ($discos.Count -gt 1) { [string][char]0xE70D } else { '' }   # flechita hacia abajo
     $ui.StatDisk.Text = '{0} GB' -f [math]::Round($d.SizeRemaining / 1GB)
-    $ui.StatDiskSub.Text = 'libres de {0} GB' -f [math]::Round($d.Size / 1GB)
+    $ui.StatDiskSub.Text = 'Libres de {0} GB' -f [math]::Round($d.Size / 1GB)
     # menos de 10% libre: en amarillo, como el resto de las alertas
     $ui.StatDisk.Foreground = if ($d.SizeRemaining / $d.Size -lt 0.1) { $Colores.warn } else { $Colores.text }
     $nombre = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { 'Disco local' }
