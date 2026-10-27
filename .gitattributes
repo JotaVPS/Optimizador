@@ -1,0 +1,3 @@
+# el .bat se sube byte a byte: si git convierte CRLF a LF cambia la huella de version.json
+# y además el lanzador .bat deja de andar con LF
+*.bat -text

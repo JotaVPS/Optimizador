@@ -1,0 +1,6 @@
+# el .exe se sube como Release, no al repo
+Optimizador.exe
+lanzador/obj/
+*.bak_*
+*.zip
+v1/
