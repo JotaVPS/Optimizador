@@ -38,8 +38,10 @@ $datos = [ordered]@{
     sha256  = (Get-FileHash -LiteralPath $bat -Algorithm SHA256).Hash
     notas   = @($Notas)
 }
-# sin BOM: ConvertFrom-Json del cliente lo lee igual, pero GitHub lo muestra más limpio
-[IO.File]::WriteAllText($json, ($datos | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+# acentos como ó: el WebClient de los clientes ya instalados baja el texto como ANSI y los mostraba
+# como "dÃ³nde"; escritos así salen bien con cualquier codificación
+$texto = [regex]::Replace(($datos | ConvertTo-Json), '[^\x00-\x7F]', { param($c) '\u{0:x4}' -f [int][char]$c.Value })
+[IO.File]::WriteAllText($json, $texto, (New-Object Text.UTF8Encoding $false))
 
 Write-Host "version.json listo: v$ver  $($datos.sha256)" -ForegroundColor Green
 Write-Host "Ahora: git add Optimizador.bat version.json ; git commit -m `"v$ver`" ; git push"
