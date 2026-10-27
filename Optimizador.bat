@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.4'
+$Version = '3.5'
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -807,6 +807,7 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
       <DockPanel Grid.Row="2" Margin="26,0,26,10">
         <TextBlock x:Name="Footer" Text="Hecho por J.vps · no borra archivos personales" Foreground="{DynamicResource Faint}" FontSize="11" VerticalAlignment="Center"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <TextBlock x:Name="InstLink" Text="Instalar (abrir sin permisos)" Foreground="{DynamicResource Faint}" FontSize="11" VerticalAlignment="Center" Cursor="Hand" Margin="0,0,18,0" Visibility="Collapsed"/>
           <TextBlock x:Name="UninstLink" Text="Desinstalar" Foreground="{DynamicResource Faint}" FontSize="11" VerticalAlignment="Center" Cursor="Hand" Margin="0,0,18,0" Visibility="Collapsed"/>
           <TextBlock x:Name="InfoLink" Text="¿Qué hace cada botón?" Foreground="{DynamicResource Faint}" FontSize="11" VerticalAlignment="Center" Cursor="Hand" Margin="0,0,18,0"/>
           <TextBlock x:Name="LogLink" Text="Abrir registro" Foreground="{DynamicResource Faint}" FontSize="11" VerticalAlignment="Center" Cursor="Hand"/>
@@ -1585,18 +1586,27 @@ function Check-Instalacion {
         $ui.UninstLink.Visibility = 'Visible'
         return
     }
+    # sin instalar: el link queda siempre a mano, aunque hayan dicho "Ahora no" al cartel
+    $ui.InstLink.Visibility = 'Visible'
     if ($cfg.NoInstalar) { return }
+    Pedir-Instalar
+}
+
+function Pedir-Instalar {
     $ok = Show-Dialogo '¿Abrir siempre sin pedir permisos?' (Texto-Instalar) 'Instalar' 'Ahora no' 'escudo'
     if ($ok) {
         try {
             Install-Optimizador
             Add-Line 'Instalado: la próxima vez abrilo desde el acceso directo del Escritorio y no pide permisos.' 'ok'
+            $ui.InstLink.Visibility = 'Collapsed'
             $ui.UninstLink.Visibility = 'Visible'
         } catch { Add-Line ("No se pudo instalar: " + $_.Exception.Message) 'err' }
     } else {
-        $cfg.NoInstalar = $true; Save-Cfg   # no vuelve a preguntar
+        $cfg.NoInstalar = $true; Save-Cfg   # el cartel no vuelve a salir solo; queda el link "Instalar"
     }
 }
+
+$ui.InstLink.Add_MouseLeftButtonUp({ Pedir-Instalar })
 
 $ui.UninstLink.Add_MouseLeftButtonUp({
     $ok = Show-Dialogo '¿Desinstalar?' "Se borra la tarea, la copia en Archivos de programa y el acceso directo del Escritorio.`n`nVolvería a pedir permisos cada vez que lo abras." 'Desinstalar' 'Cancelar' 'alerta'
@@ -1604,6 +1614,7 @@ $ui.UninstLink.Add_MouseLeftButtonUp({
     Uninstall-Optimizador
     $cfg.NoInstalar = $true; Save-Cfg
     $ui.UninstLink.Visibility = 'Collapsed'
+    $ui.InstLink.Visibility = 'Visible'
     Add-Line 'Desinstalado. El programa sigue abierto hasta que lo cierres.' 'warn'
 })
 

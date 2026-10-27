@@ -1,9 +1,10 @@
 {
-    "version":  "3.4",
-    "sha256":  "B909F649190CE7FCD7D236AB17F037ABAFBA95C50484585002602EF1880F34FF",
+    "version":  "3.5",
+    "sha256":  "8667C78606C2E27ABAA762453174695EFAEFC3175EC2E05086918F054B4DA858",
     "notas":  [
                   "Abre desde Optimizador.exe: sin ventanas de cmd y con la paloma en el aviso de permisos",
                   "Se actualiza solo desde GitHub",
+                  "Link \"Instalar\" siempre a mano abajo, aunque hayas dicho \"Ahora no\"",
                   "Arreglos en la instalación y la desinstalación"
               ]
 }
