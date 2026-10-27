@@ -1,7 +1,8 @@
 {
-    "version":  "3.12",
-    "sha256":  "03463EB2BE0F1823CC690B148B4ACEBBCE35375FB5AB636C7305583BD7D859BA",
+    "version":  "3.13",
+    "sha256":  "7B7FAC6893CC9FF7A090745C11E59C063E3D1A32440B07DC7F6B3C2C27531804",
     "notas":  [
+                  "Nuevo: modo juego autom\u00e1tico. Al abrir FiveM, GTA V o el juego que elijas, cierra las apps de fondo y pone la energ\u00eda al m\u00e1ximo; al cerrarlo vuelve todo a como estaba",
                   "Textos de las tarjetas con may\u00fascula inicial"
               ]
 }

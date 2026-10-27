@@ -11,7 +11,7 @@ exit /b
 # Para probar sin ventana:  Optimizador.bat -Accion diagnostico | limpieza -Simular
 # Para sacar una captura:   Optimizador.bat -Captura C:\ruta\captura.png
 param(
-    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar', 'red', 'restaurar')]
+    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar', 'red', 'restaurar', 'autojuego', 'finjuego')]
     [string]$Accion = '',
     [switch]$Simular,
     [string]$Captura = '',
@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.12'
+$Version = '3.13'
 # el programa tal cual se abrió: si corre desde la copia instalada y la desinstalan, Instalar la reescribe desde acá
 $Fuente = try { [IO.File]::ReadAllBytes($Archivo) } catch { $null }
 
@@ -901,6 +901,13 @@ $Core = {
             'reparar'     { Hacer-Reparar }
             'red'         { Hacer-Red }
             'restaurar'   { Hacer-Restaurar }
+            # modo juego automático: al abrir un juego de la lista / al cerrarlo
+            'autojuego'   { Hacer-ModoJuego; if ($EsAdmin) { Out-Line ''; Hacer-AjustesJuego } }
+            'finjuego'    {
+                Out-Line 'FIN DEL MODO JUEGO' 'title'
+                if (Restaurar-Juego) { Out-Line '  Plan de energía y Game Bar: como estaban antes del juego.' 'ok' }
+                else { Out-Line '  No había nada para volver atrás.' 'dim' }
+            }
         }
         Set-Prog 100 'Listo'
     }
@@ -1263,6 +1270,22 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
                 <TextBlock Grid.Column="2" Text="&#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="16" VerticalAlignment="Center"/>
               </Grid>
             </Button>
+            <!-- modo juego automático: se activa solo al abrir un juego de la lista y se deshace al cerrarlo -->
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Padding="16,10" Margin="0,0,0,12">
+              <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock x:Name="AutoJuegosLink" Text="Elegir juegos" Foreground="{DynamicResource Accent}" FontSize="12" Cursor="Hand" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                  <Border x:Name="AutoToggle" Width="34" Height="18" CornerRadius="9" Cursor="Hand" Background="{DynamicResource Line}" ToolTip="Prender o apagar">
+                    <Ellipse x:Name="AutoDot" Width="12" Height="12" Fill="White" HorizontalAlignment="Left" Margin="3,0"/>
+                  </Border>
+                </StackPanel>
+                <TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock Text="Modo juego automático" Foreground="{DynamicResource Text}" FontSize="13" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="AutoSub" Text="" Foreground="{DynamicResource Muted}" FontSize="11.5" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+              </DockPanel>
+            </Border>
           </StackPanel>
 
           <UniformGrid Columns="3" Rows="2" Margin="-6,-6,-6,14">
@@ -1393,6 +1416,7 @@ function Set-Tema([string]$nombre, [bool]$claro, [bool]$inicial = $false) {
     Update-Stats
     $ui.BtnOverlay.Foreground = if ($ov.IsVisible) { $Colores.accent } else { $Colores.muted }
     $ui.BtnUpdate.Foreground = if ($script:UpdPendiente) { $Colores.accent } else { $Colores.muted }
+    if (Get-Command Set-AutoUI -ErrorAction SilentlyContinue) { Set-AutoUI }   # el interruptor toma el color del tema
     if ($ov.IsVisible) { Update-Overlay }
     Save-Cfg
 }
@@ -1549,6 +1573,7 @@ $Botones = 'BtnTodo', 'BtnLimpieza', 'BtnJuego', 'BtnRed', 'BtnDiag', 'BtnRepara
 
 function Start-Accion($accion) {
     if ($script:Job) { return }
+    $script:AccionActual = $accion
     foreach ($b in $Botones) { $ui[$b].IsEnabled = $false }
     if ($ui.Log.Document.Blocks.Count) { Add-Line '' }
     $ui.Prog.Value = 0; $ui.Pct.Text = '0%'; $ui.Status.Text = 'Arrancando...'
@@ -1570,8 +1595,85 @@ function End-Accion {
     Update-Stats
     # la captura espera a que el overlay tenga datos (la saca el timer del overlay)
     if ($Captura) { $script:CapturaLista = Get-Date; return }
-    Play-Listo
+    # las del modo juego automático no suenan: pasan con el juego abierto
+    if ($script:AccionActual -notin 'autojuego', 'finjuego') { Play-Listo }
 }
+
+# ---------- modo juego automático ----------
+# Cada 3 s mira si hay un juego de la lista abierto: al abrirlo cierra las apps de fondo y pone energía al
+# máximo + Game Bar sin grabar; al cerrarlo (20 s sin el juego) devuelve energía y Game Bar a como estaban.
+function Get-JuegoAbierto {
+    $nombres = @((Get-Process).ProcessName)
+    foreach ($j in @($cfg.Juegos)) { if ($j.P -and @($nombres -like $j.P).Count) { return $j.N } }
+    $null
+}
+
+function Set-AutoUI {
+    $on = [bool]$cfg.AutoJuego
+    $ui.AutoToggle.Background = if ($on) { $Colores.accent } else { $Colores.toggleOff }
+    $ui.AutoDot.HorizontalAlignment = if ($on) { 'Right' } else { 'Left' }
+    $lista = (@($cfg.Juegos) | ForEach-Object { $_.N }) -join ', '
+    $ui.AutoSub.Text = if ($script:AutoJuego) { "Activo: $($script:AutoJuego) está abierto" }
+                       elseif (-not $lista) { 'Elegí al menos un juego' }
+                       elseif ($on) { "Se activa solo al abrir: $lista" }
+                       else { "Apagado · juegos: $lista" }
+}
+
+function Toggle-Auto {
+    $cfg.AutoJuego = -not [bool]$cfg.AutoJuego
+    Save-Cfg
+    # apagado con un juego abierto: vuelve todo a como estaba
+    if (-not $cfg.AutoJuego -and $script:AutoJuego) { $script:AutoJuego = $null; $script:AutoSinJuego = $null; Start-Accion 'finjuego' }
+    Set-AutoUI
+}
+
+function Check-AutoJuego {
+    if ($script:Job) { return }   # hay otra acción corriendo: se revisa en la próxima vuelta
+    $j = Get-JuegoAbierto
+    if ($j -and -not $script:AutoJuego) {
+        $script:AutoJuego = $j; $script:AutoSinJuego = $null
+        Start-Accion 'autojuego'
+        $tray.ShowBalloonTip(4000, "Modo juego: $j", 'Cerré las apps de fondo y puse la energía al máximo. Al salir del juego vuelve a como estaba.', 'Info')
+        Set-AutoUI
+    } elseif (-not $j -and $script:AutoJuego) {
+        # unos segundos de gracia: FiveM reinicia el proceso del juego al entrar a un server
+        if (-not $script:AutoSinJuego) { $script:AutoSinJuego = Get-Date; return }
+        if (((Get-Date) - $script:AutoSinJuego).TotalSeconds -lt 20) { return }
+        $fin = $script:AutoJuego; $script:AutoJuego = $null; $script:AutoSinJuego = $null
+        Start-Accion 'finjuego'
+        $tray.ShowBalloonTip(4000, "Saliste de $fin", 'La energía y la Game Bar volvieron a como estaban.', 'Info')
+        Set-AutoUI
+    } elseif ($j) { $script:AutoSinJuego = $null }
+}
+
+# menú para elegir juegos: los de la lista (tocar = sacar) y los programas abiertos con ventana (tocar = agregar)
+function Show-MenuJuegos {
+    $e = @(@{ T = 'head'; Texto = 'JUEGOS · tocá uno para sacarlo' })
+    foreach ($j in @($cfg.Juegos)) {
+        $e += @{ T = 'item'; Texto = $j.N; Der = (New-Toggle $true); A = [scriptblock]::Create("Quitar-Juego '$($j.P -replace "'", "''")'") }
+    }
+    if (-not @($cfg.Juegos).Count) { $e += @{ T = 'info'; Texto = 'No hay juegos en la lista' } }
+    $ignorar = 'explorer', 'ApplicationFrameHost', 'TextInputHost', 'SystemSettings', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost', 'LockApp'
+    $abiertos = @(Get-Process | Where-Object {
+        $p = $_
+        $_.MainWindowHandle -ne 0 -and $_.Id -ne $PID -and $ignorar -notcontains $_.ProcessName -and
+        -not (@($cfg.Juegos) | Where-Object { $p.ProcessName -like $_.P })
+    } | Sort-Object ProcessName -Unique)
+    $e += @{ T = 'sep' }
+    $e += @{ T = 'head'; Texto = 'AGREGAR · programas abiertos' }
+    if ($abiertos) {
+        foreach ($p in $abiertos) {
+            $nombre = if ($p.Description) { $p.Description } else { $p.ProcessName }
+            $e += @{ T = 'item'; Texto = $nombre; A = [scriptblock]::Create("Agregar-Juego '$($nombre -replace "'", "''")' '$($p.ProcessName -replace "'", "''")'") }
+        }
+    } else { $e += @{ T = 'info'; Texto = 'Abrí el juego y volvé acá para agregarlo' } }
+    Show-Menu $e
+}
+function Agregar-Juego($nombre, $proceso) { $cfg.Juegos = @($cfg.Juegos) + @(@{ N = $nombre; P = $proceso }); Save-Cfg; Set-AutoUI }
+function Quitar-Juego($proceso) { $cfg.Juegos = @(@($cfg.Juegos) | Where-Object { $_.P -ne $proceso }); Save-Cfg; Set-AutoUI }
+
+$ui.AutoToggle.Add_MouseLeftButtonUp({ Toggle-Auto })
+$ui.AutoJuegosLink.Add_MouseLeftButtonUp({ Show-MenuJuegos })
 
 # Sonido de "listo": dos notas que suben (La5 → Mi6), suaves y cortas, generadas acá (sin archivos).
 # Cada nota: seno + un poco de octava arriba (brillo tipo cristal), ataque de 6 ms y cola que se apaga sola.
@@ -1706,6 +1808,9 @@ $ui.InfoLink.Add_MouseLeftButtonUp({
 TODO PARA JUGAR
 Deja la PC lista: Limpieza + Modo juego + plan de energía en Alto rendimiento + la Game Bar sin grabar de fondo (eso cuesta FPS). El plan y la Game Bar vuelven a como estaban al cerrar el optimizador o con "Restaurar ajustes".
 
+MODO JUEGO AUTOMÁTICO
+Con el interruptor prendido, al abrir un juego de la lista (FiveM y GTA V vienen puestos) cierra las apps de fondo y pone la energía al máximo con la Game Bar sin grabar, y te avisa. Al cerrar el juego, energía y Game Bar vuelven a como estaban. En "Elegir juegos" sacás o agregás juegos: abrí el juego y aparece en la lista para sumarlo. Funciona aunque el optimizador esté en la bandeja.
+
 LIMPIEZA
 Borra temporales, caché de miniaturas, descargas viejas de Windows Update, reportes de errores, caché de Discord y FiveM, logs de Steam y la caché de DNS. Te dice cuánto liberó.
 
@@ -1833,10 +1938,13 @@ if ($logo) { $b = New-Object Windows.Media.ImageBrush $logo; $b.Stretch = 'Unifo
 # ---------- configuración guardada (visible, esquina, posición a mano) ----------
 $cfgPath = Join-Path $Raiz 'config.json'
 $cfg = @{ Overlay = $false; Pos = 'TR'; Left = 0; Top = 0; Tema = 'Esmeralda'; Claro = $false
-          Datos = @('logo', 'cpu', 'ram', 'gpu', 'temp', 'vram', 'ping', 'hora') }
+          Datos = @('logo', 'cpu', 'ram', 'gpu', 'temp', 'vram', 'ping', 'hora')
+          # modo juego automático: N = nombre que se muestra, P = nombre del proceso (acepta *)
+          # FiveM: el que importa es el proceso del juego (FiveM_b3258_GTAProcess), no el launcher
+          AutoJuego = $false; Juegos = @(@{ N = 'FiveM'; P = 'FiveM_*GTAProcess' }, @{ N = 'GTA V'; P = 'GTA5' }) }
 if (Test-Path $cfgPath) {
     $j = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    foreach ($k in 'Overlay', 'Pos', 'Left', 'Top', 'Tema', 'Claro', 'Datos', 'NoInstalar', 'Disco') { if ($null -ne $j.$k) { $cfg[$k] = $j.$k } }
+    foreach ($k in 'Overlay', 'Pos', 'Left', 'Top', 'Tema', 'Claro', 'Datos', 'NoInstalar', 'Disco', 'AutoJuego', 'Juegos') { if ($null -ne $j.$k) { $cfg[$k] = $j.$k } }
 }
 function Save-Cfg {
     if ($Captura) { return }   # las capturas de prueba no tocan tu configuración
@@ -2008,6 +2116,8 @@ function Get-TrayMenu {
         @{ T = 'toggle'; Texto = 'Datos en pantalla'; On = $ov.IsVisible; A = { Set-Overlay (-not $ov.IsVisible) } }
         @{ T = 'item'; Texto = 'Elegir qué datos mostrar'; A = { Show-MenuDatos } }
         @{ T = 'sep' }
+        @{ T = 'toggle'; Texto = 'Modo juego automático'; On = [bool]$cfg.AutoJuego; A = { Toggle-Auto } }
+        @{ T = 'sep' }
         @{ T = 'item'; Texto = 'Buscar actualizaciones'; A = { Start-BuscarUpdate $true } }
         @{ T = 'item'; Texto = 'Salir'; A = { Salir } }
     )
@@ -2175,6 +2285,8 @@ $timerOv.Add_Tick({
         $script:CapturaLista = $null; Save-Captura; Salir; return
     }
     if ($script:EvtMostrar -and $script:EvtMostrar.WaitOne(0)) { Show-Main }
+    # modo juego automático (aunque la ventana esté en la bandeja)
+    if ($cfg.AutoJuego -and -not $Captura -and ((++$script:AutoTick) % 3) -eq 0) { Check-AutoJuego }
     # busca versión nueva al arrancar y después una vez por día (aunque quede días en la bandeja)
     if ($script:ProximoChequeo -and (Get-Date) -ge $script:ProximoChequeo) { Start-BuscarUpdate $false }
 })
