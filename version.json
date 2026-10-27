@@ -1,8 +1,10 @@
 {
-    "version":  "3.10",
-    "sha256":  "20A78F185C3F92B4D9AED6CE8BACAE292715E2C0CEB5D4F733B1CB0DE045BA4E",
+    "version":  "3.11",
+    "sha256":  "5CF9B924B82CEC9C8A26E236D5B91F22BFC5A99C0AB85B64977FE5182327976C",
     "notas":  [
-                  "Arreglado: Desinstalar y volver a Instalar desde la app dejaba el acceso directo sin programa (abr\u00eda y se cerraba)",
-                  "La ventana se abre al frente"
+                  "Todo para jugar ahora tambi\u00e9n pone la energ\u00eda al m\u00e1ximo y apaga la grabaci\u00f3n de la Game Bar (vuelve a como estaba al cerrar)",
+                  "Punto de restauraci\u00f3n de Windows antes de Red y Reparar",
+                  "Diagn\u00f3stico: pantallazos azules explicados con qu\u00e9 probar primero, y aviso si la RAM va m\u00e1s lenta de lo que da",
+                  "Restaurar ajustes: deshace Red y Todo para jugar"
               ]
 }

@@ -59,6 +59,13 @@ using System.Reflection;
 [assembly: AssemblyFileVersion("$ver.0.0")]
 "@ | Set-Content -LiteralPath $info -Encoding UTF8
 
+# si el .exe anterior está abierto Windows no deja pisarlo, pero sí renombrarlo: se corre a .viejo
+Get-ChildItem (Split-Path $exe) -Filter '*.viejo' | Remove-Item -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $exe) {
+    try { Remove-Item -LiteralPath $exe -Force -ErrorAction Stop }
+    catch { Rename-Item -LiteralPath $exe -NewName ("Optimizador.{0:yyyyMMddHHmmss}.viejo" -f (Get-Date)) }
+}
+
 # el PowerShell 5.1 que trae Windows, como librería: el .exe corre el script adentro suyo
 $sma = [PSObject].Assembly.Location
 & $csc /nologo /target:winexe /optimize+ /platform:anycpu "/reference:$sma" "/out:$exe" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'app.manifest')" "/resource:$bat,Optimizador.bat" (Join-Path $src 'Lanzador.cs') $info

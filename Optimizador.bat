@@ -11,7 +11,7 @@ exit /b
 # Para probar sin ventana:  Optimizador.bat -Accion diagnostico | limpieza -Simular
 # Para sacar una captura:   Optimizador.bat -Captura C:\ruta\captura.png
 param(
-    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar', 'red', 'restaurarred')]
+    [ValidateSet('', 'limpieza', 'juego', 'todo', 'diagnostico', 'reparar', 'red', 'restaurar')]
     [string]$Accion = '',
     [switch]$Simular,
     [string]$Captura = '',
@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.10'
+$Version = '3.11'
 # el programa tal cual se abrió: si corre desde la copia instalada y la desinstalan, Instalar la reescribe desde acá
 $Fuente = try { [IO.File]::ReadAllBytes($Archivo) } catch { $null }
 
@@ -309,6 +309,7 @@ function Finish-Update($m) {
     $nuevo = $false
     $script:EvtListo = New-Object Threading.EventWaitHandle $false, ([Threading.EventResetMode]::ManualReset), 'Local\OptimizadorJvps_Listo', ([ref]$nuevo), $sec
     $script:UpdEsperaHasta = (Get-Date).AddSeconds(30)
+    $script:Actualizando = $true
     # deja que la ventana nueva pase al frente (Windows no deja robar el foco si no se lo permite el que lo tiene)
     [void][JVps.Shell]::AllowSetForegroundWindow(-1)
     # reabre la versión nueva: suelta el mutex antes, si no la nueva se cree la segunda instancia
@@ -465,7 +466,116 @@ $Core = {
         Log-Archivo ("Modo juego: cerrados {0}" -f ($cerrados -join ', '))
     }
 
+    # ---------- AJUSTES PARA JUGAR (parte de "Todo para jugar") ----------
+    # Plan de energía en Alto rendimiento y la Game Bar sin grabar de fondo. Lo de antes queda en
+    # juego_respaldo.json (una sola vez) y vuelve al cerrar la app o con "Restaurar ajustes".
+    $ClaveDVR = 'HKCU:\System\GameConfigStore'
+    $ClaveCaptura = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR'
+    function Get-PlanActivo { if ((powercfg /getactivescheme) -join ' ' -match '([0-9a-fA-F]{8}-[0-9a-fA-F-]{27})') { $Matches[1].ToLower() } }
+
+    function Hacer-AjustesJuego {
+        Out-Line 'AJUSTES PARA JUGAR' 'title'
+        Set-Prog 50 'Plan de energía y Game Bar'
+        $resp = Join-Path $Raiz 'juego_respaldo.json'
+        $dvr = (Get-ItemProperty $ClaveDVR).GameDVR_Enabled
+        $cap = (Get-ItemProperty $ClaveCaptura).AppCaptureEnabled
+        $plan = Get-PlanActivo
+        if (-not (Test-Path -LiteralPath $resp)) {
+            if (-not (Test-Path $Raiz)) { New-Item -ItemType Directory -Path $Raiz | Out-Null }
+            @{ Plan = $plan; DVR = $dvr; Captura = $cap } | ConvertTo-Json | Set-Content -LiteralPath $resp -Encoding UTF8
+        }
+        # SCHEME_MIN = Alto rendimiento (el nombre es de Windows: "mínimo ahorro de energía")
+        $alto = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'
+        if ($plan -eq $alto) { Out-Line ("  {0,-32}{1}" -f 'Plan de energía', 'ya estaba en Alto rendimiento') 'dim' }
+        else {
+            powercfg /setactive SCHEME_MIN | Out-Null
+            if ((Get-PlanActivo) -eq $alto) { Out-Line ("  {0,-32}{1}" -f 'Plan de energía', 'Alto rendimiento') 'ok' }
+            else { Out-Line ("  {0,-32}{1}" -f 'Plan de energía', 'esta PC no tiene Alto rendimiento') 'warn' }
+        }
+        # la Game Bar graba los últimos minutos todo el tiempo para "guardar clip": eso cuesta FPS
+        if ($dvr -eq 0 -and $cap -eq 0) { Out-Line ("  {0,-32}{1}" -f 'Grabación de la Game Bar', 'ya estaba apagada') 'dim' }
+        else {
+            Set-ItemProperty $ClaveDVR -Name GameDVR_Enabled -Value 0 -Type DWord
+            if (-not (Test-Path $ClaveCaptura)) { New-Item -Path $ClaveCaptura -Force | Out-Null }
+            Set-ItemProperty $ClaveCaptura -Name AppCaptureEnabled -Value 0 -Type DWord
+            Out-Line ("  {0,-32}{1}" -f 'Grabación de la Game Bar', 'apagada') 'ok'
+        }
+        Out-Line '  Vuelve a como estaba al cerrar el optimizador o con "Restaurar ajustes".' 'dim'
+        Log-Archivo 'Ajustes para jugar aplicados'
+    }
+
+    # devuelve $true si había algo para volver atrás (también la llama Salir al cerrar la app)
+    function Restaurar-Juego {
+        $resp = Join-Path $Raiz 'juego_respaldo.json'
+        if (-not (Test-Path -LiteralPath $resp)) { return $false }
+        $r = Get-Content -LiteralPath $resp -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($r.Plan) { powercfg /setactive $r.Plan | Out-Null }
+        if ($null -ne $r.DVR) { Set-ItemProperty $ClaveDVR -Name GameDVR_Enabled -Value ([int]$r.DVR) -Type DWord }
+        if ($null -ne $r.Captura) { Set-ItemProperty $ClaveCaptura -Name AppCaptureEnabled -Value ([int]$r.Captura) -Type DWord }
+        Remove-Item -LiteralPath $resp -Force
+        Log-Archivo 'Ajustes para jugar restaurados'
+        $true
+    }
+
+    function Hacer-Restaurar {
+        Out-Line 'RESTAURAR AJUSTES' 'title'
+        if (Restaurar-Juego) { Out-Line '  Plan de energía y Game Bar: como estaban antes de "Todo para jugar".' 'ok' }
+        if (Test-Path -LiteralPath $RespaldoRed) { Hacer-RestaurarRed $true }
+    }
+
+    # ---------- PUNTO DE RESTAURACIÓN (antes de Red y Reparar) ----------
+    function Crear-PuntoRestauracion($motivo, [int]$pct = 2) {
+        Set-Prog $pct 'Creando punto de restauración'
+        Out-Line '  Creando punto de restauración de Windows (puede tardar un minuto)...' 'dim'
+        $antes = @(Get-ComputerRestorePoint).Count
+        $error_ = $null
+        try { Checkpoint-Computer -Description "Optimizador J.vps: antes de $motivo" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue }
+        catch { $error_ = $_.Exception.Message }
+        if (@(Get-ComputerRestorePoint).Count -gt $antes) {
+            Out-Line '  Punto de restauración creado: si algo sale mal, Inicio > "Recuperación" > Abrir Restaurar sistema.' 'ok'
+        } elseif ($error_) {
+            # casi siempre: la Protección del sistema está apagada en C:
+            Out-Line '  No se pudo crear el punto de restauración (¿Protección del sistema apagada en C:?). Se sigue igual.' 'warn'
+        } else {
+            # Windows hace como mucho uno por día: si ya hubo uno, usa ese
+            Out-Line '  Windows ya tiene un punto de restauración de hoy: se usa ese.' 'dim'
+        }
+    }
+
     # ---------- DIAGNOSTICO ----------
+    # pantallazos azules frecuentes: nombre, qué quiere decir y a qué apunta (ram / driver / gpu / hw)
+    $CodigosBSOD = @{
+        '0x0000000a' = 'IRQL_NOT_LESS_OR_EQUAL', 'Un driver o la RAM accedió a memoria que no debía.', 'driver'
+        '0x0000001a' = 'MEMORY_MANAGEMENT', 'Error manejando la memoria: casi siempre RAM.', 'ram'
+        '0x0000001e' = 'KMODE_EXCEPTION_NOT_HANDLED', 'Un driver tiró un error que nadie atajó.', 'driver'
+        '0x00000018' = 'REFERENCE_BY_POINTER', 'Un driver liberó algo que todavía se usaba.', 'driver'
+        '0x00000019' = 'BAD_POOL_HEADER', 'Memoria del sistema corrupta: driver o RAM.', 'ram'
+        '0x0000003b' = 'SYSTEM_SERVICE_EXCEPTION', 'Falló un driver mientras Windows lo llamaba.', 'driver'
+        '0x0000004e' = 'PFN_LIST_CORRUPT', 'Tabla de memoria corrupta: casi siempre RAM.', 'ram'
+        '0x00000050' = 'PAGE_FAULT_IN_NONPAGED_AREA', 'Se leyó memoria que no existía: RAM o driver.', 'ram'
+        '0x0000007e' = 'SYSTEM_THREAD_EXCEPTION_NOT_HANDLED', 'Un driver tiró un error sin manejar.', 'driver'
+        '0x0000009f' = 'DRIVER_POWER_STATE_FAILURE', 'Un driver no respondió al suspender o despertar.', 'driver'
+        '0x000000be' = 'ATTEMPTED_WRITE_TO_READONLY_MEMORY', 'Se escribió en memoria de solo lectura: driver o RAM.', 'driver'
+        '0x000000c5' = 'DRIVER_CORRUPTED_EXPOOL', 'Un driver rompió memoria del sistema.', 'driver'
+        '0x000000d1' = 'DRIVER_IRQL_NOT_LESS_OR_EQUAL', 'Un driver (muchas veces el de red) accedió mal a memoria.', 'driver'
+        '0x000000ef' = 'CRITICAL_PROCESS_DIED', 'Murió un proceso esencial de Windows.', 'driver'
+        '0x00000116' = 'VIDEO_TDR_FAILURE', 'La placa de video dejó de responder.', 'gpu'
+        '0x00000124' = 'WHEA_UNCORRECTABLE_ERROR', 'El procesador reportó un error de hardware: overclock, temperatura o fuente.', 'hw'
+        '0x00000133' = 'DPC_WATCHDOG_VIOLATION', 'Un driver (o el SSD) se colgó demasiado tiempo.', 'driver'
+        '0x00000139' = 'KERNEL_SECURITY_CHECK_FAILURE', 'Windows detectó datos corruptos: driver o RAM.', 'driver'
+    }
+    # velocidad para la que está hecha la RAM, sacada del código de modelo (KF3200C16 → 3200, BL8G32C16 → 3200);
+    # Windows solo dice a cuánto anda, no a cuánto puede ir
+    function Get-RamNominal($mod) {
+        $pn = [string]$mod.PartNumber
+        if ($pn -match '(?<!\d)(2133|2400|2666|2800|2933|3000|3200|3466|3600|3733|4000|4133|4266|4400|4800|5200|5600|6000|6400|6800|7200|7600|8000)(?!\d)') { return [int]$Matches[1] }
+        $corto = @{ '21' = 2133; '24' = 2400; '26' = 2666; '29' = 2933; '30' = 3000; '32' = 3200; '36' = 3600; '40' = 4000; '44' = 4400; '48' = 4800; '52' = 5200; '56' = 5600; '60' = 6000; '64' = 6400 }
+        if ($pn -match '[A-Z](\d{2})C\d{2}' -and $corto[$Matches[1]]) { return $corto[$Matches[1]] }
+        if ($pn -match 'KF\d(\d{2})C' -and $corto[$Matches[1]]) { return $corto[$Matches[1]] }   # Kingston Fury: KF432C16 → 3200
+        if ($mod.Speed -gt $mod.ConfiguredClockSpeed) { return [int]$mod.Speed }
+        $null
+    }
+
     function Hacer-Diagnostico {
         Out-Line 'DIAGNÓSTICO' 'title'
         Set-Prog 15 'Memoria RAM'
@@ -473,6 +583,13 @@ $Core = {
         $totalGB = ($mods | Measure-Object Capacity -Sum).Sum / 1GB
         $mhz = $mods[0].ConfiguredClockSpeed
         Out-Line ("  RAM: {0} GB en {1} módulos a {2} MHz" -f $totalGB, $mods.Count, $mhz) 'ok'
+        $nominal = Get-RamNominal $mods[0]
+        $hayBsod = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = (Get-Date).AddDays(-7) }).Count
+        if ($nominal -and $nominal -gt $mhz + 50) {
+            Out-Line ("    Es RAM de {0} MHz y está andando a {1} MHz." -f $nominal, $mhz) 'warn'
+            if ($hayBsod) { Out-Line '    Si la bajaste a propósito por los pantallazos, dejala así. Si no, revisá el XMP/EXPO en el BIOS.' 'dim' }
+            else { Out-Line '    Activá XMP / EXPO / DOCP en el BIOS para que vaya a su velocidad: se nota en los juegos.' 'dim' }
+        }
 
         Set-Prog 35 'Pantallazos y apagones'
         $desde = (Get-Date).AddDays(-7)
@@ -481,9 +598,30 @@ $Core = {
         $k = if ($bsod.Count -or $apagon.Count) { 'err' } else { 'ok' }
         Out-Line ("  Últimos 7 días: {0} pantallazos azules, {1} apagones inesperados" -f $bsod.Count, $apagon.Count) $k
         if ($bsod.Count) {
-            $codigo = if ($bsod[0].Message -match '(0x[0-9a-fA-F]{8})') { $Matches[1] } else { '?' }
-            Out-Line ("    Último: {0:dd/MM HH:mm}  código {1}" -f $bsod[0].TimeCreated, $codigo) 'err'
-            Out-Line '    Muchos códigos distintos suelen ser RAM inestable: probá bajar el XMP en el BIOS.' 'warn'
+            # cada código, cuántas veces y qué significa en criollo
+            $porCodigo = $bsod | Group-Object { if ($_.Message -match '0x([0-9a-fA-F]{8})') { '0x' + $Matches[1].ToLower() } else { '?' } } | Sort-Object Count -Descending
+            Out-Line ("    Último: {0:dd/MM HH:mm}" -f $bsod[0].TimeCreated) 'err'
+            foreach ($g in $porCodigo) {
+                $c = $g.Name -replace '^0x0*', '0x'
+                $q = $CodigosBSOD[$g.Name]
+                Out-Line ("    {0,2}×  {1,-6} {2}" -f $g.Count, $c, $(if ($q) { $q[0] } else { 'código poco común' })) 'warn'
+                if ($q) { Out-Line ("              {0}" -f $q[1]) 'dim' }
+            }
+            # conclusión: qué probar primero
+            $tipos = @($porCodigo | ForEach-Object { if ($CodigosBSOD[$_.Name]) { $CodigosBSOD[$_.Name][2] } })
+            Out-Line '' 'dim'
+            if ($porCodigo.Count -ge 3) {
+                Out-Line '    Muchos códigos distintos: casi siempre es la RAM inestable (XMP/EXPO) o un driver.' 'warn'
+                Out-Line '    Probá en este orden: XMP/EXPO desactivado en el BIOS · "Diagnóstico de memoria de Windows" · drivers de video y chipset al día.' 'dim'
+            } elseif ($tipos -contains 'gpu') {
+                Out-Line '    Apunta al driver de video: reinstalalo limpio desde la página de NVIDIA/AMD.' 'warn'
+            } elseif ($tipos -contains 'hw') {
+                Out-Line '    Apunta a hardware: overclock, temperaturas o fuente. Sacá cualquier overclock y mirá las temperaturas.' 'warn'
+            } elseif ($tipos -contains 'ram') {
+                Out-Line '    Apunta a la RAM: probá con el XMP/EXPO desactivado y pasá el "Diagnóstico de memoria de Windows".' 'warn'
+            } else {
+                Out-Line '    Apunta a un driver: actualizá video, chipset y red, y desinstalá lo que hayas instalado esos días.' 'warn'
+            }
         }
 
         Set-Prog 55 'Discos'
@@ -522,6 +660,7 @@ $Core = {
         Out-Line 'REPARAR WINDOWS' 'title'
         if (-not $EsAdmin) { Out-Line '  Necesita permisos de administrador. Abrilo desde Optimizador.bat y aceptá el aviso.' 'err'; return }
         Out-Line '  Tarda entre 10 y 30 minutos. No apagues la PC.' 'warn'
+        Crear-PuntoRestauracion 'Reparar Windows'
         Set-Prog 5 'DISM: reparando la imagen de Windows'
         & DISM /Online /Cleanup-Image /RestoreHealth 2>&1 | ForEach-Object {
             $t = ("$_" -replace "`0", '').Trim()
@@ -541,7 +680,7 @@ $Core = {
 
     # ---------- RED ----------
     # Solo cambios que se deshacen: antes de tocar nada guarda cómo estaba todo en red_respaldo.json
-    # (una sola vez, así "Restaurar red" siempre vuelve a lo original). No cambia DNS ni IP y no hace
+    # (una sola vez, así "Restaurar ajustes" siempre vuelve a lo original). No cambia DNS ni IP y no hace
     # reset de winsock/TCP (eso sí puede dejar sin internet hasta reiniciar).
     $RespaldoRed = Join-Path $Raiz 'red_respaldo.json'
     # ahorro de energía de la placa (Ethernet y Wi-Fi): mete microcortes y picos; apagarlo no baja la velocidad.
@@ -634,6 +773,7 @@ $Core = {
 
         Out-Line ''
         Out-Line 'AJUSTES' 'title'
+        Crear-PuntoRestauracion 'ajustes de Red' 50
         Set-Prog 55 'Guardando cómo está todo'
         $guid = $placa.InterfaceGuid
         $claveIf = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
@@ -651,7 +791,7 @@ $Core = {
             }
             if (-not (Test-Path $Raiz)) { New-Item -ItemType Directory -Path $Raiz | Out-Null }
             $resp | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $RespaldoRed -Encoding UTF8
-            Out-Line '  Respaldo guardado: "Restaurar red" lo deja todo como estaba.' 'dim'
+            Out-Line '  Respaldo guardado: "Restaurar ajustes" lo deja todo como estaba.' 'dim'
         }
 
         Set-Prog 65 'Aplicando'
@@ -752,11 +892,15 @@ $Core = {
         switch ($a) {
             'limpieza'    { Hacer-Limpieza }
             'juego'       { Hacer-ModoJuego }
-            'todo'        { Hacer-Limpieza; Out-Line ''; Hacer-ModoJuego; Out-Line ''; Out-Line 'Sistema listo para jugar' 'title' }
+            'todo'        {
+                Hacer-Limpieza; Out-Line ''; Hacer-ModoJuego; Out-Line ''
+                if ($EsAdmin) { Hacer-AjustesJuego; Out-Line '' } else { Out-Line '  Plan de energía y Game Bar: necesitan permisos de administrador.' 'warn'; Out-Line '' }
+                Out-Line 'Sistema listo para jugar' 'title'
+            }
             'diagnostico' { Hacer-Diagnostico }
             'reparar'     { Hacer-Reparar }
             'red'         { Hacer-Red }
-            'restaurarred' { Hacer-RestaurarRed }
+            'restaurar'   { Hacer-Restaurar }
         }
         Set-Prog 100 'Listo'
     }
@@ -1114,7 +1258,7 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
                 <TextBlock Grid.Column="0" Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="26" VerticalAlignment="Center" Margin="0,0,16,0"/>
                 <StackPanel Grid.Column="1">
                   <TextBlock Text="Todo para jugar" FontSize="18" FontWeight="Bold"/>
-                  <TextBlock Text="Limpieza + cierra lo que corre de fondo" FontSize="12" Opacity="0.8"/>
+                  <TextBlock Text="Limpieza, apps de fondo, energía al máximo y Game Bar sin grabar" FontSize="12" Opacity="0.8"/>
                 </StackPanel>
                 <TextBlock Grid.Column="2" Text="&#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="16" VerticalAlignment="Center"/>
               </Grid>
@@ -1137,8 +1281,8 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
             <Button x:Name="BtnReparar" Style="{StaticResource Card}" Margin="6">
               <StackPanel><TextBlock Text="&#xE90F;" Style="{StaticResource Icon}"/><TextBlock Text="Reparar Windows" Style="{StaticResource CardTitle}"/><TextBlock Text="DISM + SFC (10-30 min)" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
-            <Button x:Name="BtnRestaurarRed" Style="{StaticResource Card}" Margin="6">
-              <StackPanel><TextBlock Text="&#xE777;" Style="{StaticResource Icon}"/><TextBlock Text="Restaurar red" Style="{StaticResource CardTitle}"/><TextBlock Text="Vuelve a como estaba" Style="{StaticResource CardSub}"/></StackPanel>
+            <Button x:Name="BtnRestaurar" Style="{StaticResource Card}" Margin="6">
+              <StackPanel><TextBlock Text="&#xE777;" Style="{StaticResource Icon}"/><TextBlock Text="Restaurar ajustes" Style="{StaticResource CardTitle}"/><TextBlock Text="Red y Todo para jugar" Style="{StaticResource CardSub}"/></StackPanel>
             </Button>
           </UniformGrid>
         </DockPanel>
@@ -1401,7 +1545,7 @@ $ui.DiskCard.Add_MouseLeftButtonUp({ Show-MenuDiscos })
 # ---------- ejecutar acciones en segundo plano ----------
 $sync = [hashtable]::Synchronized(@{ Q = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]' })
 $script:Job = $null
-$Botones = 'BtnTodo', 'BtnLimpieza', 'BtnJuego', 'BtnRed', 'BtnDiag', 'BtnReparar', 'BtnRestaurarRed'
+$Botones = 'BtnTodo', 'BtnLimpieza', 'BtnJuego', 'BtnRed', 'BtnDiag', 'BtnReparar', 'BtnRestaurar'
 
 function Start-Accion($accion) {
     if ($script:Job) { return }
@@ -1535,15 +1679,19 @@ $ui.BtnTema.Add_Click({ Show-MenuTemas })
 $ui.UpdPill.Add_Click({ Ofrecer-Update })
 $ui.BtnUpdate.Add_Click({ if ($script:UpdPendiente) { Ofrecer-Update } else { Start-BuscarUpdate $true } })
 $ui.BtnRed.Add_Click({
-    $ok = Show-Dialogo 'Red' "Mide tu conexión, te dice dónde están los picos (Wi-Fi, cable o proveedor) y aplica ajustes seguros: autoajuste de TCP, ahorro de energía de la placa, límite de red con multimedia, Windows Update sin subir a otras PCs y paquetes sin demora.`n`nNo cambia DNS ni IP. Se guarda cómo estaba todo y 'Restaurar red' lo deja igual.`n`nLa conexión se corta unos segundos al final." 'Arrancar' 'Cancelar' 'pregunta'
+    $ok = Show-Dialogo 'Red' "Mide tu conexión, te dice dónde están los picos (Wi-Fi, cable o proveedor) y aplica ajustes seguros: autoajuste de TCP, ahorro de energía de la placa, límite de red con multimedia, Windows Update sin subir a otras PCs y paquetes sin demora.`n`nNo cambia DNS ni IP. Antes crea un punto de restauración de Windows, guarda cómo estaba todo y 'Restaurar ajustes' lo deja igual.`n`nLa conexión se corta unos segundos al final." 'Arrancar' 'Cancelar' 'pregunta'
     if ($ok) { Start-Accion 'red' }
 })
-$ui.BtnRestaurarRed.Add_Click({
-    if (-not (Test-Path -LiteralPath (Join-Path $Raiz 'red_respaldo.json'))) {
-        Show-Dialogo 'Restaurar red' 'No hay nada para restaurar: los ajustes de red nunca se aplicaron en esta PC.' 'OK' '' 'info' | Out-Null; return
+$ui.BtnRestaurar.Add_Click({
+    $red = Test-Path -LiteralPath (Join-Path $Raiz 'red_respaldo.json')
+    $juego = Test-Path -LiteralPath (Join-Path $Raiz 'juego_respaldo.json')
+    if (-not $red -and -not $juego) {
+        Show-Dialogo 'Restaurar ajustes' 'No hay nada para restaurar: todo está como lo dejó Windows.' 'OK' '' 'info' | Out-Null; return
     }
-    $ok = Show-Dialogo 'Restaurar red' "Vuelve la red exactamente a como estaba antes de los ajustes.`n`nLa conexión se corta unos segundos." 'Restaurar' 'Cancelar' 'alerta'
-    if ($ok) { Start-Accion 'restaurarred' }
+    $que = @(); if ($red) { $que += '•  Red: todo como estaba antes de los ajustes (la conexión se corta unos segundos)' }
+    if ($juego) { $que += '•  Plan de energía y Game Bar: como estaban antes de "Todo para jugar"' }
+    $ok = Show-Dialogo 'Restaurar ajustes' ("Vuelve a como estaba:`n`n" + ($que -join "`n")) 'Restaurar' 'Cancelar' 'alerta'
+    if ($ok) { Start-Accion 'restaurar' }
 })
 $ui.BtnTodo.Add_Click({ Start-Accion 'todo' })
 $ui.BtnLimpieza.Add_Click({ Start-Accion 'limpieza' })
@@ -1556,7 +1704,7 @@ $ui.BtnReparar.Add_Click({
 $ui.InfoLink.Add_MouseLeftButtonUp({
     $txt = @"
 TODO PARA JUGAR
-Limpieza + Modo juego, de una.
+Deja la PC lista: Limpieza + Modo juego + plan de energía en Alto rendimiento + la Game Bar sin grabar de fondo (eso cuesta FPS). El plan y la Game Bar vuelven a como estaban al cerrar el optimizador o con "Restaurar ajustes".
 
 LIMPIEZA
 Borra temporales, caché de miniaturas, descargas viejas de Windows Update, reportes de errores, caché de Discord y FiveM, logs de Steam y la caché de DNS. Te dice cuánto liberó.
@@ -1567,14 +1715,17 @@ Cierra programas de fondo (OneDrive, Widgets, Epic, EA, BlueStacks, Adobe, Autod
 RED
 Mide el ping al router y a internet para saber si los picos vienen del Wi-Fi, del cable o del proveedor, y avisa si el cable va a 100 Mbps en una placa Gigabit. Después aplica ajustes seguros: autoajuste de TCP en normal, apaga el ahorro de energía de la placa, saca el límite de red con multimedia, Windows Update deja de subir a PCs de desconocidos y los paquetes chicos salen sin demora. Mide de nuevo y compara. Si la conexión no vuelve, deshace todo solo.
 
-RESTAURAR RED
-Deja la red exactamente como estaba antes de los ajustes (se guarda un respaldo la primera vez).
+RESTAURAR AJUSTES
+Deja la red, el plan de energía y la Game Bar exactamente como estaban antes (se guarda un respaldo la primera vez).
 
 DIAGNÓSTICO
-Velocidad de la RAM, pantallazos azules de la última semana, espacio y salud de los discos, programas de arranque y driver de video.
+Velocidad de la RAM (y si va más lenta de lo que da: XMP/EXPO), pantallazos azules de la última semana explicados con qué probar primero, espacio y salud de los discos, programas de arranque y driver de video.
 
 REPARAR WINDOWS
 DISM + SFC: revisa los archivos de Windows y arregla los dañados. Tarda 10 a 30 minutos.
+
+PUNTO DE RESTAURACIÓN
+Antes de Red y de Reparar Windows se crea un punto de restauración de Windows (si Windows ya hizo uno hoy, usa ese).
 
 QUÉ NO HACE
 No borra fotos, documentos, descargas ni la Papelera. No toca servicios ni el BIOS, y en el registro solo cambia los ajustes de Red (con respaldo). No cambia tu DNS ni tu IP. No manda datos a ningún lado (solo hace un ping a 1.1.1.1 para medir tu latencia en pantalla y una vez por día se fija en GitHub si hay versión nueva).
@@ -1995,6 +2146,12 @@ function Salir {
     $script:Saliendo = $true
     $stats.Run = $false
     if ($script:Job) { try { $script:Job.PS.Stop() } catch { } }
+    # plan de energía y Game Bar vuelven a como estaban antes de "Todo para jugar"
+    # (el núcleo se carga acá adentro, así sus funciones no pisan las de la ventana)
+    # (al cerrarse para actualizar no: la versión nueva sigue con los ajustes puestos)
+    if (-not $script:Actualizando -and (Test-Path -LiteralPath (Join-Path $Raiz 'juego_respaldo.json'))) {
+        try { . $Core; [void](Restaurar-Juego) } catch { }
+    }
     $tray.Visible = $false; $tray.Dispose()
     $atajo.Dispose()
     $ov.Close(); $win.Close()
