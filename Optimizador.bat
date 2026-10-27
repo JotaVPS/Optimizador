@@ -24,7 +24,9 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.9'
+$Version = '3.10'
+# el programa tal cual se abrió: si corre desde la copia instalada y la desinstalan, Instalar la reescribe desde acá
+$Fuente = try { [IO.File]::ReadAllBytes($Archivo) } catch { $null }
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -82,7 +84,11 @@ function Start-Oculto($argumentos) {
 
 function Install-Optimizador {
     if (-not (Test-Path $InstDir)) { New-Item -ItemType Directory -Path $InstDir | Out-Null }
-    if ($Archivo -ne $InstBat) { Copy-Item -LiteralPath $Archivo -Destination $InstBat -Force }
+    # abierto desde la copia instalada después de Desinstalar: el archivo ya no existe y no hay de dónde copiarlo
+    # (antes quedaba la tarea sin programa y el acceso directo abría y cerraba)
+    if ($Archivo -ne $InstBat -and (Test-Path -LiteralPath $Archivo)) { Copy-Item -LiteralPath $Archivo -Destination $InstBat -Force }
+    elseif (-not (Test-Path -LiteralPath $InstBat) -and $Fuente) { [IO.File]::WriteAllBytes($InstBat, $Fuente) }
+    if (-not (Test-Path -LiteralPath $InstBat)) { throw 'no se pudo copiar el programa a Archivos de programa.' }
     if ($Exe -and $Exe -ne $InstExe) { Copy-Item -LiteralPath $Exe -Destination $InstExe -Force }
     # con el .exe instalado la tarea lo usa a él: así tampoco se asoma la consola de PowerShell
     $accion = if (Test-Path -LiteralPath $InstExe) { New-ScheduledTaskAction -Execute $InstExe -Argument '--directo' }

@@ -1,7 +1,8 @@
 {
-    "version":  "3.9",
-    "sha256":  "4F55EAD50110F1C06B4AD3650A071287F0708EE9E2B57DD349DA7204AC10A010",
+    "version":  "3.10",
+    "sha256":  "20A78F185C3F92B4D9AED6CE8BACAE292715E2C0CEB5D4F733B1CB0DE045BA4E",
     "notas":  [
-                  "La ventana se abre al frente (antes pod\u00eda quedar detr\u00e1s de otras al actualizar o abrir desde el acceso directo)"
+                  "Arreglado: Desinstalar y volver a Instalar desde la app dejaba el acceso directo sin programa (abr\u00eda y se cerraba)",
+                  "La ventana se abre al frente"
               ]
 }
