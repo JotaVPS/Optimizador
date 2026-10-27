@@ -1,6 +1,4 @@
-# el .exe se sube como Release, no al repo
-Optimizador.exe
-lanzador/obj/
-*.bak_*
-*.zip
-v1/
+# el .exe compilado va como Release, no al repo
+dist/
+# versiones viejas y respaldos: solo en la PC
+archivo/

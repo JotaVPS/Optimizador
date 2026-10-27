@@ -2,17 +2,19 @@
 #  Publicar versión nueva del Optimizador
 # ================================
 # 1) Subí $Version en Optimizador.bat (ej. '3.4')
-# 2) powershell -ExecutionPolicy Bypass -File publicar.ps1 "Arreglé tal cosa" "Agregué tal otra"
+# 2) powershell -File herramientas\publicar.ps1 "Arreglé tal cosa" "Agregué tal otra"
 # 3) git add Optimizador.bat version.json ; git commit ; git push
-# (para repartir a gente nueva: build.ps1 regenera Optimizador.exe con este .bat adentro)
+# (para repartir a gente nueva: herramientas\build.ps1 deja dist\Optimizador.exe con este .bat adentro)
+# Optimizador.bat y version.json van en la raíz del repo: las copias instaladas los buscan ahí.
 # Genera version.json con la versión y la huella SHA256 del .bat tal cual está en disco.
 # Si el .bat cambia después de correr esto, la huella no coincide y los clientes descartan la descarga.
 
 # cada texto entre comillas es una novedad (sin esto solo tomaba la primera)
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Notas = @())
 
-$bat = Join-Path $PSScriptRoot 'Optimizador.bat'
-$json = Join-Path $PSScriptRoot 'version.json'
+$raiz = Split-Path $PSScriptRoot   # este script vive en herramientas\
+$bat = Join-Path $raiz 'Optimizador.bat'
+$json = Join-Path $raiz 'version.json'
 
 $m = [regex]::Match(((Get-Content -LiteralPath $bat -TotalCount 40 -Encoding UTF8) -join "`n"), "\`$Version = '([\d.]+)'")
 if (-not $m.Success) { Write-Host "No encontré la línea `$Version = '...' en Optimizador.bat" -ForegroundColor Red; exit 1 }

@@ -1,10 +1,8 @@
 {
-    "version":  "3.6",
-    "sha256":  "0209C56027E3828719A3E219D2214E960D1EB1C6911B2F701D4A71167DA02FC9",
+    "version":  "3.7",
+    "sha256":  "A5106D817B502EB8650674169784208E8BB8576609CA6C3A9BF9891B57E13824",
     "notas":  [
-                  "Nuevo: Red. Mide d\u00f3nde est\u00e1n los picos (Wi-Fi, cable o proveedor) y aplica ajustes seguros, con Restaurar red",
-                  "Tarjeta de disco: clic para ver cada uno de tus discos",
-                  "Bot\u00f3n de actualizaciones arriba a la derecha y aviso cuando hay versi\u00f3n nueva",
-                  "Link \"Instalar\" siempre a mano abajo"
+                  "Al actualizar se ve el progreso (descarga, verificaci\u00f3n, instalaci\u00f3n) y la app no se cierra hasta que abre la nueva",
+                  "Selector de discos: flechita con men\u00fa, cada disco con su nombre y espacio libre"
               ]
 }

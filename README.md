@@ -1,26 +1,31 @@
 # Optimizador J.vps
 
-Optimizador de Windows para jugar: limpieza de temporales y cachés, modo juego, diagnóstico, reparación (DISM + SFC) y datos en pantalla.
+Optimizador de Windows para jugar: limpieza de temporales y cachés, modo juego, red (menos picos y cortes), diagnóstico, reparación (DISM + SFC) y datos en pantalla.
 
 ## Descarga
 
 Bajá `Optimizador.exe` de [Releases](https://github.com/JotaVPS/Optimizador/releases/latest) y abrilo. La primera vez pide permisos de administrador; si elegís **Instalar**, después abre sin pedirlos.
 
-El programa se fija una vez por día si hay versión nueva y ofrece actualizarse solo.
+El programa se fija si hay versión nueva, avisa arriba a la derecha y se actualiza solo mostrando el progreso.
 
-## Archivos
+## Estructura
 
-| Archivo | Qué es |
-|---|---|
-| `Optimizador.bat` | El programa (PowerShell + WPF). También se puede abrir directo con doble clic. |
-| `version.json` | Versión publicada y huella SHA256 del `.bat`; de acá lee las actualizaciones. |
-| `lanzador/` | Fuente de `Optimizador.exe`: corre el `.bat` adentro suyo, sin consolas. |
-| `build.ps1` | Compila `Optimizador.exe` (usa el compilador de C# que trae Windows). |
-| `publicar.ps1` | Genera `version.json` para una versión nueva. |
+```
+Optimizador.bat     el programa (PowerShell + WPF); también abre directo con doble clic
+version.json        versión publicada + huella SHA256 del .bat (de acá leen las actualizaciones)
+lanzador/           fuente de Optimizador.exe: corre el .bat adentro suyo, sin consolas
+herramientas/
+  build.ps1         compila dist/Optimizador.exe con el compilador de C# que trae Windows
+  publicar.ps1      genera version.json para una versión nueva
+dist/               (local) el .exe compilado; se sube como Release
+archivo/            (local) versiones viejas y respaldos
+```
+
+`Optimizador.bat` y `version.json` tienen que quedar en la raíz: las copias ya instaladas los buscan en esa ruta.
 
 ## Publicar una versión
 
 1. Subir `$Version` en `Optimizador.bat`.
-2. `powershell -File publicar.ps1 "Novedad 1" "Novedad 2"`
-3. `powershell -File build.ps1` (para el `.exe` de Releases)
-4. Commit + push de `Optimizador.bat` y `version.json`, y subir el `.exe` a un Release nuevo.
+2. `powershell -File herramientas\publicar.ps1 "Novedad 1" "Novedad 2"`
+3. `powershell -File herramientas\build.ps1`
+4. Commit + push de `Optimizador.bat` y `version.json`, y subir `dist\Optimizador.exe` a un Release nuevo.

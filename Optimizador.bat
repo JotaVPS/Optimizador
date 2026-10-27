@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.6'
+$Version = '3.7'
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -200,32 +200,131 @@ function Ofrecer-Update {
     if ($ok) { Install-Update $j }
 }
 
+# Actualizar se ve de punta a punta: ventana con barra (descargando %, verificando, instalando) y la app
+# vieja no se cierra hasta que la nueva avisa que ya abrió (evento ..._Listo), así no queda un hueco sin nada.
+$UpdMarca = Join-Path $Raiz 'actualizado.json'   # la versión nueva lo lee al abrir y muestra "¡Listo!"
+
+function Set-UpdProgreso([int]$pct, [string]$texto) {
+    $d = $script:UpdDlg
+    if (-not $d) { return }
+    $ancho = if ($d.Tag.Pista.ActualWidth) { $d.Tag.Pista.ActualWidth } else { 410 }   # 410 = ancho del diálogo
+    $d.Tag.Barra.Width = $ancho * [math]::Min(100, [math]::Max(0, $pct)) / 100
+    $d.FindName('DTexto').Text = $texto
+}
+
+function Close-UpdDialogo {
+    if ($script:UpdDlg) { $script:UpdDlg.Tag.Cerrar = $true; $script:UpdDlg.Close(); $script:UpdDlg = $null }
+}
+
 function Install-Update($j) {
+    if ($script:UpdEnCurso) { return }
+    $script:UpdEnCurso = $j
+    # el diálogo de siempre, sin botones y con una barra de progreso abajo del texto
+    $d = New-Dialogo "Actualizando a v$($j.version)" 'Descargando...' '' '' 'descarga'
+    $d.FindName('DSi').Visibility = 'Collapsed'; $d.FindName('DNo').Visibility = 'Collapsed'
+    $pista = New-Object Windows.Controls.Border -Property @{ Height = 6; CornerRadius = 3; Margin = '0,16,0,0' }
+    $pista.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, 'Line')
+    $barra = New-Object Windows.Controls.Border -Property @{ Height = 6; CornerRadius = 3; HorizontalAlignment = 'Left'; Width = 0 }
+    $barra.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, 'Grad')
+    $pista.Child = $barra
+    [void]$d.FindName('DTexto').Parent.Parent.Children.Insert(2, $pista)
+    $d.Tag = @{ Pista = $pista; Barra = $barra; Cerrar = $false }
+    # mientras actualiza no se cierra (ni con Esc): si se corta a la mitad queda en la versión vieja igual
+    $d.Add_Closing({ if (-not $this.Tag.Cerrar) { $_.Cancel = $true } })
+    $script:UpdDlg = $d
+    $d.Show()
+
+    # descarga en segundo plano, de a pedazos para poder mostrar el porcentaje
     $tmp = Join-Path $env:TEMP "Optimizador_v$($j.version).bat"
+    $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+    $rs.SessionStateProxy.SetVariable('sync', $sync)
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $script:UpdDescarga = $ps
+    [void]$ps.AddScript({
+        param($url, $tmp, $ver)
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+            $req = [Net.HttpWebRequest]::Create($url)
+            $req.UserAgent = "Optimizador-JVps/$ver"; $req.Headers['Cache-Control'] = 'no-cache'
+            $resp = $req.GetResponse(); $total = $resp.ContentLength
+            $in = $resp.GetResponseStream(); $out = [IO.File]::Create($tmp)
+            $buf = New-Object byte[] 16384; $leido = 0; $ultimo = -1
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                $out.Write($buf, 0, $n); $leido += $n
+                $pct = if ($total -gt 0) { [int]($leido * 100 / $total) } else { 50 }
+                if ($pct -ne $ultimo) { $ultimo = $pct; $sync.Q.Enqueue(@{ Tipo = 'updprog'; P = $pct; KB = [int]($leido / 1KB); Total = [int]($total / 1KB) }) }
+            }
+            $out.Close(); $in.Close(); $resp.Close()
+            $sync.Q.Enqueue(@{ Tipo = 'upddl'; Ruta = $tmp })
+        } catch {
+            if ($out) { $out.Close() }
+            $sync.Q.Enqueue(@{ Tipo = 'upddl'; Error = $_.Exception.Message })
+        }
+    }).AddArgument("$UrlBase/Optimizador.bat?t=" + [DateTime]::UtcNow.Ticks).AddArgument($tmp).AddArgument($Version)
+    [void]$ps.BeginInvoke()
+}
+
+function Handle-UpdProgreso($m) {
+    $txt = if ($m.Total -gt 0) { "Descargando...  $($m.KB) KB de $($m.Total) KB" } else { "Descargando...  $($m.KB) KB" }
+    Set-UpdProgreso ([int]($m.P * 0.8)) $txt   # la descarga es el 80% de la barra; el resto, verificar e instalar
+}
+
+function Finish-Update($m) {
+    if ($script:UpdDescarga) { $script:UpdDescarga.Runspace.Dispose(); $script:UpdDescarga.Dispose(); $script:UpdDescarga = $null }
+    $j = $script:UpdEnCurso
+    $tmp = $m.Ruta
     try {
-        Add-Line ''; Add-Line "Descargando v$($j.version)..." 'info'
-        (New-Cliente).DownloadFile("$UrlBase/Optimizador.bat?t=" + [DateTime]::UtcNow.Ticks, $tmp)
+        if ($m.Error) { throw "no se pudo descargar ($($m.Error))." }
+        Set-UpdProgreso 85 'Verificando que el archivo sea el original...'
         if ((Get-Hash $tmp) -ne ([string]$j.sha256).ToUpper()) { throw 'el archivo descargado no coincide con la huella publicada, así que se descartó.' }
         if ((Get-VersionArchivo $tmp) -ne [version]$j.version) { throw 'el archivo descargado no es la versión anunciada.' }
+        Set-UpdProgreso 92 'Instalando...'
         $instalado = Test-Tarea
         # abierto desde la copia de Archivos de programa sin admin: no hay dónde escribir
         if ($Archivo -eq $InstBat -and -not $EsAdminAhora) { throw 'hace falta abrirlo con permisos de administrador para actualizar la instalación.' }
         # -ErrorAction Stop: con SilentlyContinue un copiado fallido pasaba como "Actualizado"
         if ($instalado -and $EsAdminAhora) { Copy-Item -LiteralPath $tmp -Destination $InstBat -Force -ErrorAction Stop }
         if ($Archivo -ne $InstBat) { Copy-Item -LiteralPath $tmp -Destination $Archivo -Force -ErrorAction Stop }
-        Add-Line "Actualizado a v$($j.version). Reabriendo..." 'ok'
     } catch {
+        Close-UpdDialogo
+        $script:UpdEnCurso = $null
         Add-Line ("No se pudo actualizar: " + $_.Exception.Message) 'err'
         Show-Dialogo 'No se pudo actualizar' ("Se quedó en la v$Version.`n`n" + $_.Exception.Message) 'OK' '' 'alerta' | Out-Null
         return
-    } finally { Remove-Item -LiteralPath $tmp -Force }
+    } finally { if ($tmp) { Remove-Item -LiteralPath $tmp -Force } }
+
+    Set-UpdProgreso 100 "Abriendo la v$($j.version)..."
+    # la versión nueva lee esto para mostrar "¡Listo!" con las novedades
+    if (-not (Test-Path $Raiz)) { New-Item -ItemType Directory -Path $Raiz | Out-Null }
+    @{ De = $Version; A = [string]$j.version; Notas = @($j.notas) } | ConvertTo-Json | Set-Content -LiteralPath $UpdMarca -Encoding UTF8
+    # la nueva avisa por este evento cuando ya tiene la ventana abierta
+    $sec = New-Object Security.AccessControl.EventWaitHandleSecurity
+    $sec.AddAccessRule((New-Object Security.AccessControl.EventWaitHandleAccessRule (New-Object Security.Principal.SecurityIdentifier ([Security.Principal.WellKnownSidType]::WorldSid), $null), ([Security.AccessControl.EventWaitHandleRights]'Synchronize, Modify'), 'Allow'))
+    $nuevo = $false
+    $script:EvtListo = New-Object Threading.EventWaitHandle $false, ([Threading.EventResetMode]::ManualReset), 'Local\OptimizadorJvps_Listo', ([ref]$nuevo), $sec
+    $script:UpdEsperaHasta = (Get-Date).AddSeconds(30)
+    # deja que la ventana nueva pase al frente (Windows no deja robar el foco si no se lo permite el que lo tiene)
+    [void][JVps.Shell]::AllowSetForegroundWindow(-1)
     # reabre la versión nueva: suelta el mutex antes, si no la nueva se cree la segunda instancia
     if ($script:Mutex) { $script:Mutex.ReleaseMutex(); $script:Mutex.Dispose(); $script:Mutex = $null }
     if ($instalado -and $EsAdminAhora) { Start-ScheduledTask -TaskName $TareaNombre }
     # con el .exe se relanza él (mismos permisos que ahora, sin powershell.exe); sin él, PowerShell sin ventana
     elseif ($Exe) { Start-Process -FilePath $Exe -ArgumentList '--elevado' }
     else { Start-Oculto (Comando-Lanzar $Archivo) }
-    Salir
+    # Salir lo hace el timer cuando la nueva avisa (o a los 30 s, por si tarda)
+}
+
+# la versión nueva, al abrir: avisa a la vieja que ya puede cerrarse y muestra qué cambió
+function Show-Actualizado {
+    try { $e = [Threading.EventWaitHandle]::OpenExisting('Local\OptimizadorJvps_Listo'); [void]$e.Set(); $e.Dispose() } catch { }
+    if (-not (Test-Path -LiteralPath $UpdMarca)) { return }
+    $u = Get-Content -LiteralPath $UpdMarca -Raw -Encoding UTF8 | ConvertFrom-Json
+    Remove-Item -LiteralPath $UpdMarca -Force
+    if ($u.A -ne $Version) { return }
+    Show-Main
+    Add-Line "Actualizado: v$($u.De) → v$Version" 'ok'
+    $notas = if ($u.Notas) { "`n`nNovedades:`n" + (($u.Notas | ForEach-Object { "•  $_" }) -join "`n") } else { '' }
+    Show-Dialogo "¡Listo! Ya tenés la v$Version" ("Se actualizó desde la v$($u.De)." + $notas) 'Genial' '' 'info' | Out-Null
 }
 
 # ================================
@@ -681,6 +780,7 @@ Add-Type -Namespace JVps -Name Shell -MemberDefinition @'
 [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int index);
 [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int index, int value);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern bool MoveFileEx(string origen, string destino, int flags);
+[DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int procesoId);
 '@
 # Identidad propia: sin esto la barra de tareas agrupa con PowerShell y muestra su ícono en vez de la paloma
 [void][JVps.Shell]::SetCurrentProcessExplicitAppUserModelID('JVps.Optimizador')
@@ -984,11 +1084,11 @@ function Set-VentanaHerramienta($ventana, [bool]$sinFoco) {
               <Border Style="{StaticResource Stat}">
                 <StackPanel><TextBlock Text="MEMORIA" Style="{StaticResource StatLabel}"/><TextBlock x:Name="StatRam" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatRamSub" Text="" Style="{StaticResource StatLabel}"/></StackPanel>
               </Border>
-              <!-- con varios discos: clic en la tarjeta pasa al siguiente -->
+              <!-- con varios discos: clic en la tarjeta abre el menú para elegir cuál ver -->
               <Border x:Name="DiskCard" Style="{StaticResource Stat}">
                 <StackPanel>
                   <DockPanel>
-                    <TextBlock x:Name="StatDiskNav" DockPanel.Dock="Right" Text="" Style="{StaticResource StatLabel}" Foreground="{DynamicResource Accent}"/>
+                    <TextBlock x:Name="StatDiskNav" DockPanel.Dock="Right" Text="" FontFamily="Segoe MDL2 Assets" FontSize="10" VerticalAlignment="Center" Foreground="{DynamicResource Accent}"/>
                     <TextBlock x:Name="StatDiskLabel" Text="DISCO C:" Style="{StaticResource StatLabel}"/>
                   </DockPanel>
                   <TextBlock x:Name="StatDisk" Text="-" Style="{StaticResource StatValue}"/><TextBlock x:Name="StatDiskSub" Text="" Style="{StaticResource StatLabel}"/>
@@ -1258,22 +1358,39 @@ function Show-Disco {
     $i = Get-IndiceDisco $discos
     $d = $discos[$i]
     $ui.StatDiskLabel.Text = 'DISCO {0}:' -f $d.DriveLetter
-    $ui.StatDiskNav.Text = if ($discos.Count -gt 1) { '{0}/{1}  ›' -f ($i + 1), $discos.Count } else { '' }
+    $ui.StatDiskNav.Text = if ($discos.Count -gt 1) { [string][char]0xE70D } else { '' }   # flechita hacia abajo
     $ui.StatDisk.Text = '{0} GB' -f [math]::Round($d.SizeRemaining / 1GB)
     $ui.StatDiskSub.Text = 'libres de {0} GB' -f [math]::Round($d.Size / 1GB)
     # menos de 10% libre: en amarillo, como el resto de las alertas
     $ui.StatDisk.Foreground = if ($d.SizeRemaining / $d.Size -lt 0.1) { $Colores.warn } else { $Colores.text }
     $nombre = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { 'Disco local' }
-    $ui.DiskCard.ToolTip = if ($discos.Count -gt 1) { "$nombre ($($d.DriveLetter):) · clic para ver otro disco" } else { "$nombre ($($d.DriveLetter):)" }
+    $ui.DiskCard.ToolTip = if ($discos.Count -gt 1) { "$nombre ($($d.DriveLetter):) · clic para elegir otro disco" } else { "$nombre ($($d.DriveLetter):)" }
     $ui.DiskCard.Cursor = if ($discos.Count -gt 1) { 'Hand' } else { $null }
 }
-$ui.DiskCard.Add_MouseLeftButtonUp({
+# menú con cada disco: nombre y letra, libres a la derecha y tilde en el que se está viendo
+function Show-MenuDiscos {
     $discos = Get-Discos
     if ($discos.Count -lt 2) { return }
-    $cfg.Disco = [string]$discos[((Get-IndiceDisco $discos) + 1) % $discos.Count].DriveLetter
-    Save-Cfg
-    Show-Disco
-})
+    $actual = $discos[(Get-IndiceDisco $discos)].DriveLetter
+    $e = @(@{ T = 'head'; Texto = 'DISCOS' })
+    foreach ($d in $discos) {
+        $sp = New-Object Windows.Controls.StackPanel; $sp.Orientation = 'Horizontal'
+        $libre = New-Object Windows.Controls.TextBlock
+        $libre.Text = '{0} GB libres' -f [math]::Round($d.SizeRemaining / 1GB); $libre.FontSize = 11.5; $libre.VerticalAlignment = 'Center'
+        $libre.Foreground = if ($d.SizeRemaining / $d.Size -lt 0.1) { $Colores.warn } else { $Colores.muted }
+        [void]$sp.Children.Add($libre)
+        if ($d.DriveLetter -eq $actual) {
+            $ok = New-Object Windows.Controls.TextBlock
+            $ok.Text = [char]0xE73E; $ok.FontFamily = 'Segoe MDL2 Assets'; $ok.FontSize = 12; $ok.Foreground = $Colores.accent
+            $ok.VerticalAlignment = 'Center'; $ok.Margin = New-Object Windows.Thickness 10, 0, 0, 0
+            [void]$sp.Children.Add($ok)
+        }
+        $nombre = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { 'Disco local' }
+        $e += @{ T = 'item'; Texto = "$nombre ($($d.DriveLetter):)"; Der = $sp; A = [scriptblock]::Create("`$cfg.Disco = '$($d.DriveLetter)'; Save-Cfg; Show-Disco") }
+    }
+    Show-Menu $e
+}
+$ui.DiskCard.Add_MouseLeftButtonUp({ Show-MenuDiscos })
 
 # ---------- ejecutar acciones en segundo plano ----------
 $sync = [hashtable]::Synchronized(@{ Q = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]' })
@@ -1356,7 +1473,15 @@ $timer.Add_Tick({
             'prog' { $ui.Prog.Value = $m.P; $ui.Pct.Text = "$($m.P)%"; $ui.Status.Text = $m.L }
             'done' { End-Accion }
             'update' { Handle-Update $m }
+            'updprog' { Handle-UpdProgreso $m }
+            'upddl' { Finish-Update $m }
         }
+    }
+    # actualizando: cuando la versión nueva avisa que abrió (o a los 30 s) se cierra esta
+    if ($script:UpdEsperaHasta -and ($script:EvtListo.WaitOne(0) -or (Get-Date) -ge $script:UpdEsperaHasta)) {
+        $script:UpdEsperaHasta = $null
+        Close-UpdDialogo
+        Salir
     }
 })
 $timer.Start()
@@ -1871,6 +1996,7 @@ $win.Add_ContentRendered({
         Start-Accion 'diagnostico'
         return
     }
+    Show-Actualizado
     if ($EsAdminAhora) { Check-Instalacion }
     $script:ProximoChequeo = (Get-Date).AddSeconds(4)
 })

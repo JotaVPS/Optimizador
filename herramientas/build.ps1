@@ -3,16 +3,18 @@
 # ================================
 # Mete Optimizador.bat adentro del .exe, con la paloma de ícono y la versión del .bat.
 # Usa el compilador de C# que ya trae Windows (.NET Framework 4), no hace falta instalar nada.
-# Correrlo después de cada cambio al .bat:  powershell -File build.ps1
+# Correrlo después de cada cambio al .bat:  powershell -File herramientas\build.ps1
+# Deja el resultado en dist\Optimizador.exe (no se sube al repo: va como Release).
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
-$dir = $PSScriptRoot
+$dir = Split-Path $PSScriptRoot   # raíz del proyecto (este script vive en herramientas\)
 $bat = Join-Path $dir 'Optimizador.bat'
 $src = Join-Path $dir 'lanzador'
-$obj = Join-Path $src 'obj'
-$exe = Join-Path $dir 'Optimizador.exe'
+$obj = Join-Path $env:TEMP 'optimizador_build'   # intermedios (ícono, versión) fuera del proyecto
+$exe = Join-Path $dir 'dist\Optimizador.exe'
+New-Item -ItemType Directory -Force (Split-Path $exe) | Out-Null
 $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
 New-Item -ItemType Directory -Force $obj | Out-Null
 
