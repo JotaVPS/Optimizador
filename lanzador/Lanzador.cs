@@ -47,8 +47,12 @@ static class Lanzador
             // instalado y al día: la tarea lo abre con permisos sin el aviso de Windows
             // (si se instaló desde el .bat no hay .exe en Archivos de programa: se pide permiso una vez
             // para que el script pase la instalación a este .exe y la tarea deje de usar powershell.exe)
-            if (File.Exists(InstExe) && Version(InstBat) >= Version(LocalBat)
-                && Ejecutar("schtasks.exe", "/run /tn \"" + Tarea + "\"") == 0) return;
+            if (File.Exists(InstExe) && Version(InstBat) >= Version(LocalBat))
+            {
+                // la tarea abre la ventana desde otro proceso: sin este permiso Windows la deja detrás de todo
+                AllowSetForegroundWindow(-1);
+                if (Ejecutar("schtasks.exe", "/run /tn \"" + Tarea + "\"") == 0) return;
+            }
             try
             {
                 Process.Start(new ProcessStartInfo(Yo, "--elevado") { UseShellExecute = true, Verb = "runas" });
@@ -125,6 +129,9 @@ static class Lanzador
         }
         catch { return -1; }
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool AllowSetForegroundWindow(int procesoId);   // -1 = cualquier proceso
 
     static bool EsAdmin()
     {

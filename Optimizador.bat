@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.8'
+$Version = '3.9'
 
 # ================================
 # UNA SOLA INSTANCIA
@@ -2021,6 +2021,9 @@ $timerOv.Start()
 $win.Add_Closing({ if (-not $script:Saliendo) { $_.Cancel = $true; Hide-Main } })
 
 $win.Add_ContentRendered({
+    # abierto por la tarea programada (acceso directo o después de actualizar) Windows lo deja detrás de
+    # las otras ventanas: un instante "siempre visible" lo trae al frente aunque no le den el foco
+    if (-not $Captura) { $win.Topmost = $true; [void]$win.Activate(); $win.Topmost = $false }
     Update-Stats
     Add-Line 'Listo. Elegí una opción.' 'dim'
     if ($cfg.Overlay -or $Captura) { Set-Overlay $true }
