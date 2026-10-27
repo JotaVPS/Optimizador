@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 # los logs van a AppData para no ensuciar la carpeta del optimizador
 $Raiz = Join-Path $env:LOCALAPPDATA 'Optimizador J.vps'
-$Version = '3.13'
+$Version = '3.14'
 # el programa tal cual se abrió: si corre desde la copia instalada y la desinstalan, Instalar la reescribe desde acá
 $Fuente = try { [IO.File]::ReadAllBytes($Archivo) } catch { $null }
 
@@ -440,6 +440,23 @@ $Core = {
         @{ Nombre = 'uTorrent Web';    Procesos = 'utweb' }
     )
 
+    # Discord no se cierra (se usa para hablar jugando): se le devuelve a Windows la RAM que tiene reservada
+    # sin usar. No toca la llamada: lo que necesita lo vuelve a tomar al instante. La prioridad no se baja
+    # a propósito: con el juego usando todo el procesador, el audio se podría entrecortar.
+    # Devuelve los MB liberados, o $null si Discord no está abierto.
+    function Liberar-RamDiscord {
+        $ps = @(Get-Process -Name Discord, DiscordPTB, DiscordCanary -ErrorAction SilentlyContinue)
+        if (-not $ps) { return $null }
+        if (-not ('JVps.Memoria' -as [type])) {
+            Add-Type -Namespace JVps -Name Memoria -MemberDefinition '[DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr proceso);'
+        }
+        $antes = ($ps | Measure-Object WorkingSet64 -Sum).Sum
+        foreach ($p in $ps) { try { [void][JVps.Memoria]::EmptyWorkingSet($p.Handle) } catch { } }
+        Start-Sleep -Milliseconds 500
+        $despues = (@(Get-Process -Id $ps.Id -ErrorAction SilentlyContinue) | Measure-Object WorkingSet64 -Sum).Sum
+        [math]::Max(0, [math]::Round(($antes - $despues) / 1MB))
+    }
+
     function Hacer-ModoJuego {
         Out-Line 'MODO JUEGO' 'title'
         Set-Prog 10 'Buscando programas de fondo'
@@ -457,6 +474,9 @@ $Core = {
             }
         }
         if (-not $cerrados) { Out-Line '  No había nada de fondo para cerrar.' 'ok' }
+        Set-Prog 92 'Discord'
+        $mb = Liberar-RamDiscord
+        if ($null -ne $mb) { Out-Line ("  Discord: {0:N0} MB de RAM liberados (sigue abierto, la llamada no se corta)" -f $mb) 'ok' }
         Set-Prog 95 'Midiendo RAM'
         Start-Sleep -Seconds 2
         $ramDespues = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 2)
@@ -645,6 +665,13 @@ $Core = {
         $hb = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power').HiberbootEnabled
         if ($hb -eq 1) { Out-Line '  Inicio rápido: activado (si se cuelga al apagar, desactivalo)' 'warn' }
         else { Out-Line '  Inicio rápido: desactivado' 'ok' }
+
+        $dc = @(Get-Process -Name Discord, DiscordPTB, DiscordCanary -ErrorAction SilentlyContinue)
+        if ($dc) {
+            Out-Line ("  Discord abierto: {0:N0} MB de RAM" -f (($dc | Measure-Object WorkingSet64 -Sum).Sum / 1MB)) 'ok'
+            Out-Line '    Para más FPS: en Discord, Configuración > Superposición del juego > apagada (dibuja encima del juego todo el tiempo).' 'dim'
+            Out-Line '    El Modo juego le libera la RAM sin cerrarlo ni cortar la llamada.' 'dim'
+        }
 
         Set-Prog 90 'Placa de video'
         $gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel' } | Select-Object -First 1
@@ -1633,6 +1660,7 @@ function Check-AutoJuego {
     if ($j -and -not $script:AutoJuego) {
         $script:AutoJuego = $j; $script:AutoSinJuego = $null
         Start-Accion 'autojuego'
+        $script:UltimoDiscord = Get-Date
         $tray.ShowBalloonTip(4000, "Modo juego: $j", 'Cerré las apps de fondo y puse la energía al máximo. Al salir del juego vuelve a como estaba.', 'Info')
         Set-AutoUI
     } elseif (-not $j -and $script:AutoJuego) {
@@ -1643,8 +1671,14 @@ function Check-AutoJuego {
         Start-Accion 'finjuego'
         $tray.ShowBalloonTip(4000, "Saliste de $fin", 'La energía y la Game Bar volvieron a como estaban.', 'Info')
         Set-AutoUI
-    } elseif ($j) { $script:AutoSinJuego = $null }
+    } elseif ($j) {
+        $script:AutoSinJuego = $null
+        # jugando: Discord vuelve a juntar RAM con el tiempo; cada 5 minutos se la devuelve a Windows
+        if (((Get-Date) - $script:UltimoDiscord).TotalMinutes -ge 5) { $script:UltimoDiscord = Get-Date; Repasar-Discord }
+    }
 }
+# usa la función del núcleo cargándolo acá adentro (así no pisa las funciones de la ventana)
+function Repasar-Discord { try { . $Core; [void](Liberar-RamDiscord) } catch { } }
 
 # menú para elegir juegos: los de la lista (tocar = sacar) y los programas abiertos con ventana (tocar = agregar)
 function Show-MenuJuegos {

@@ -1,8 +1,9 @@
 {
-    "version":  "3.13",
-    "sha256":  "7B7FAC6893CC9FF7A090745C11E59C063E3D1A32440B07DC7F6B3C2C27531804",
+    "version":  "3.14",
+    "sha256":  "4D736E4770B404BB9BCC9DEBFBCBDFB806A211D2D37D565C00D7FAB30114AB2D",
     "notas":  [
-                  "Nuevo: modo juego autom\u00e1tico. Al abrir FiveM, GTA V o el juego que elijas, cierra las apps de fondo y pone la energ\u00eda al m\u00e1ximo; al cerrarlo vuelve todo a como estaba",
-                  "Textos de las tarjetas con may\u00fascula inicial"
+                  "Discord: el Modo juego le libera la RAM sin cerrarlo ni cortar la llamada (en el modo autom\u00e1tico, cada 5 minutos)",
+                  "Nuevo: modo juego autom\u00e1tico al abrir FiveM, GTA V o el juego que elijas",
+                  "Diagn\u00f3stico: consejo para que Discord no te saque FPS"
               ]
 }
