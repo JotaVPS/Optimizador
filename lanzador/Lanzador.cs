@@ -24,6 +24,7 @@ static class Lanzador
     const string Tarea = "Optimizador J.vps";
     static readonly string Yo = Assembly.GetExecutingAssembly().Location;
     static readonly string InstBat = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Optimizador J.vps", "Optimizador.bat");
+    static readonly string InstExe = Path.Combine(Path.GetDirectoryName(InstBat), "Optimizador.exe");
     // la copia de trabajo: si el programa se actualiza desde GitHub, la versión nueva queda acá
     static readonly string Datos = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Optimizador J.vps");
     static readonly string LocalBat = Path.Combine(Datos, "app", "Optimizador.bat");
@@ -44,7 +45,10 @@ static class Lanzador
         if (!elevado && !EsAdmin())
         {
             // instalado y al día: la tarea lo abre con permisos sin el aviso de Windows
-            if (Version(InstBat) >= Version(LocalBat) && Ejecutar("schtasks.exe", "/run /tn \"" + Tarea + "\"") == 0) return;
+            // (si se instaló desde el .bat no hay .exe en Archivos de programa: se pide permiso una vez
+            // para que el script pase la instalación a este .exe y la tarea deje de usar powershell.exe)
+            if (File.Exists(InstExe) && Version(InstBat) >= Version(LocalBat)
+                && Ejecutar("schtasks.exe", "/run /tn \"" + Tarea + "\"") == 0) return;
             try
             {
                 Process.Start(new ProcessStartInfo(Yo, "--elevado") { UseShellExecute = true, Verb = "runas" });
