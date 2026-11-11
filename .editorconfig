@@ -1,0 +1,16 @@
+# Configuración del editor (VS Code, Visual Studio, Notepad++ y otros la leen solos)
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+
+# PowerShell 5.1 lee mal los acentos de un script sin BOM
+[scripts/*.ps1]
+charset = utf-8-bom
+
+[*.{json,md}]
+indent_size = 2

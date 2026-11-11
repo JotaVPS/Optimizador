@@ -1,3 +1,14 @@
-# el .bat se sube byte a byte: si git convierte CRLF a LF cambia la huella de version.json
+# Por defecto git normaliza los saltos de línea; en Windows los deja en CRLF
+* text=auto eol=crlf
+
+# El .bat se sube byte a byte: si git convierte CRLF a LF cambia la huella de version.json
 # y además el lanzador .bat deja de andar con LF
 *.bat -text
+
+# Binarios
+*.jpg binary
+*.png binary
+*.ico binary
+*.exe binary
+*.wav binary
+*.zip binary

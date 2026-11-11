@@ -7,6 +7,8 @@
 //   Optimizador.exe --directo   lo usa la tarea programada: corre la copia de Archivos de programa
 //   Optimizador.exe --elevado   interno: no vuelve a pedir permisos ni a buscar otra ventana abierta
 //                               (lo usa la copia con permisos y el reinicio después de actualizar)
+//   Optimizador.exe --bandeja   con --directo: lo usa la tarea de "Iniciar con Windows"
+//   Optimizador.exe --desinstalar  desde Configuración > Aplicaciones instaladas
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -23,7 +25,8 @@ static class Lanzador
 {
     const string Tarea = "Optimizador J.vps";
     static readonly string Yo = Assembly.GetExecutingAssembly().Location;
-    static readonly string InstBat = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Optimizador J.vps", "Optimizador.bat");
+    // dónde está instalado: la carpeta elegida en el instalador queda en Aplicaciones instaladas (InstallLocation)
+    static readonly string InstBat = Path.Combine(CarpetaInstalada(), "Optimizador.bat");
     static readonly string InstExe = Path.Combine(Path.GetDirectoryName(InstBat), "Optimizador.exe");
     // la copia de trabajo: si el programa se actualiza desde GitHub, la versión nueva queda acá
     static readonly string Datos = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Optimizador J.vps");
@@ -34,8 +37,28 @@ static class Lanzador
     {
         bool directo = Array.IndexOf(args, "--directo") >= 0;
         bool elevado = Array.IndexOf(args, "--elevado") >= 0;
+        bool bandeja = Array.IndexOf(args, "--bandeja") >= 0;   // abierto por "Iniciar con Windows"
+        bool desinstalar = Array.IndexOf(args, "--desinstalar") >= 0;   // desde Configuración > Aplicaciones
 
-        if (directo) { Correr(InstBat); Environment.Exit(0); }
+        // hay un Optimizador.exe.nuevo al lado (lo deja Claude cuando este .exe estaba abierto): se cambia por él
+        if (!directo && !desinstalar && Reemplazar(args)) return;
+
+        // la tarea programada abre el .exe instalado: corre el .bat que tiene al lado
+        if (directo) { Correr(Path.Combine(Path.GetDirectoryName(Yo), "Optimizador.bat"), bandeja, false); Environment.Exit(0); }
+
+        // Windows lo abre sin permisos: se relanza pidiéndolos (borrar Archivos de programa los necesita)
+        if (desinstalar)
+        {
+            if (!EsAdmin() && !elevado)
+            {
+                try { Process.Start(new ProcessStartInfo(Yo, "--desinstalar --elevado") { UseShellExecute = true, Verb = "runas" }); }
+                catch (Win32Exception) { }   // cancelaron el aviso: no se desinstala
+                return;
+            }
+            if (!File.Exists(InstBat)) Extraer();
+            Correr(File.Exists(InstBat) ? InstBat : LocalBat, false, true);
+            Environment.Exit(0);
+        }
 
         // ya está abierto (por ejemplo en la bandeja): le avisa que se muestre, sin pedir permisos de nuevo
         if (!elevado)
@@ -60,9 +83,55 @@ static class Lanzador
             }
             catch (Win32Exception) { }   // cancelaron el aviso: abre igual, con las opciones de admin limitadas
         }
-        Correr(LocalBat);
+        Correr(LocalBat, false, false);
         // los hilos de fondo del script (medición de datos, bandeja) no tienen que dejar el proceso vivo
         Environment.Exit(0);
+    }
+
+    // Un .exe abierto no se puede pisar, pero sí renombrar: este pasa a .viejo, el .nuevo toma su lugar,
+    // el que estaba abierto (en la bandeja) se cierra y se abre el nuevo con los mismos argumentos.
+    static bool Reemplazar(string[] args)
+    {
+        string nuevo = Yo + ".nuevo", viejo = Yo + ".viejo";
+        try { if (File.Exists(viejo)) File.Delete(viejo); } catch { }   // el de la vez anterior, si ya se cerró
+        if (!File.Exists(nuevo)) return false;
+        try
+        {
+            if (File.Exists(viejo)) viejo = Yo + "." + DateTime.Now.ToString("yyyyMMddHHmmss") + ".viejo";
+            File.Move(Yo, viejo);
+            File.Move(nuevo, Yo);
+        }
+        catch (Exception ex) { Log("No se pudo reemplazar por el .nuevo: " + ex.Message); return false; }
+        try
+        {
+            using (var e = EventWaitHandle.OpenExisting(@"Local\OptimizadorJvps_Salir")) e.Set();
+            // espera (hasta 5 s) a que el que estaba abierto se cierre: el evento desaparece con él
+            for (int i = 0; i < 50; i++)
+            {
+                Thread.Sleep(100);
+                try { using (EventWaitHandle.OpenExisting(@"Local\OptimizadorJvps_Salir")) { } }
+                catch (WaitHandleCannotBeOpenedException) { break; }
+            }
+        }
+        catch { }   // no había ninguno abierto
+        var argumentos = string.Join(" ", Array.ConvertAll(args, a => "\"" + a + "\""));
+        Process.Start(new ProcessStartInfo(Yo, argumentos) { UseShellExecute = true });
+        return true;
+    }
+
+    static string CarpetaInstalada()
+    {
+        try
+        {
+            using (var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+            using (var k = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OptimizadorJvps"))
+            {
+                var d = k == null ? null : k.GetValue("InstallLocation") as string;
+                if (!string.IsNullOrEmpty(d)) return d;
+            }
+        }
+        catch { }
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Optimizador J.vps");
     }
 
     // escribe el .bat de adentro en LocalAppData, salvo que ahí ya haya uno más nuevo (bajado de GitHub)
@@ -77,7 +146,7 @@ static class Lanzador
     }
 
     // corre el programa en este hilo (STA, como pide WPF) hasta que se cierra la ventana
-    static void Correr(string bat)
+    static void Correr(string bat, bool bandeja, bool desinstalar)
     {
         try
         {
@@ -93,11 +162,15 @@ static class Lanzador
                 rs.SessionStateProxy.SetVariable("Archivo", bat);
                 // el script lo lee como $env:OptimizadorExe para instalar este .exe y relanzarse con él
                 Environment.SetEnvironmentVariable("OptimizadorExe", Yo);
+                // versión del lanzador: el 2 sabe abrir instalaciones fuera de Archivos de programa
+                Environment.SetEnvironmentVariable("OptimizadorLanzador", "2");
                 using (var ps = PowerShell.Create())
                 {
                     ps.Runspace = rs;
                     // -SinElevar: los permisos los pide este .exe, el script no se relanza como PowerShell
                     ps.AddScript(File.ReadAllText(bat, Encoding.UTF8)).AddParameter("SinElevar");
+                    if (bandeja) ps.AddParameter("Bandeja");
+                    if (desinstalar) ps.AddParameter("Desinstalar");
                     ps.Invoke();
                 }
             }

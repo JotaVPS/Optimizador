@@ -1,8 +1,9 @@
 {
-    "version":  "3.15",
-    "sha256":  "7BCAC3D549DB654E3A85411693FCBC22DDDB3AE8CFE3049D8E330941DEF900B5",
-    "notas":  [
-                  "Discord: solo se le libera RAM al entrar al juego y si la memoria est\u00e1 justa (as\u00ed nunca molesta en llamada ni compartiendo pantalla)",
-                  "Modo juego autom\u00e1tico al abrir FiveM, GTA V o el juego que elijas"
-              ]
+    "version": "3.63",
+    "sha256": "6F9DD0F1C715A17B1BE62A457E49F29556FD6BF29AAA14A354434F08B4162479",
+    "notas": [
+        "Instalador nuevo: eleg\u00eds carpeta, acceso directo, men\u00fa Inicio e inicio con Windows",
+        "La Revisi\u00f3n completa no resta puntos si bajaste la RAM a mano en el BIOS",
+        "Los GB libres del disco ahora coinciden con el Explorador de Windows"
+    ]
 }

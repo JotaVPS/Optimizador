@@ -1,0 +1,26 @@
+﻿OPTIMIZADOR J.vps  ·  v{VERSION}
+============================
+
+CÓMO ABRIRLO
+1. Abrí "Optimizador.exe".
+2. Si Windows muestra "Windows protegió su PC" (pasa con programas nuevos sin firma):
+   tocá "Más información" y después "Ejecutar de todas formas".
+3. Aceptá el aviso de permisos de administrador (lo necesita para limpiar y para el modo juego).
+4. Se abre el instalador: elegí las opciones y tocá "Instalar". Así no te vuelve a pedir permisos
+   y lo encontrás en el escritorio y en el menú Inicio.
+
+QUÉ HACE
+- Todo para jugar: limpieza, cierra apps de fondo, energía al máximo y Game Bar sin grabar.
+- Revisión completa: te da un puntaje de 0 a 100 de tu PC y qué conviene mejorar.
+- Red, Limpieza, Modo juego, Reparar Windows, Espacio (qué ocupa el disco), Arranque (qué se abre solo).
+- Datos en pantalla: CPU, RAM, GPU, temperatura y ping arriba del juego (Ctrl+Shift+O).
+- Apariencia (botón de la paleta, arriba): colores, estilos Vidrio / Neón y tamaño Compacto.
+
+TRANQUILIDAD
+- No borra archivos personales.
+- Antes de tocar la red crea un punto de restauración, y "Restaurar ajustes" deja todo como estaba.
+- Al cerrar la ventana queda en la bandeja, al lado del reloj (la paloma). Para cerrarlo del todo:
+  click derecho en la paloma > Salir.
+- Para sacarlo: abajo a la derecha, "Desinstalar".
+
+Hecho por J.vps
